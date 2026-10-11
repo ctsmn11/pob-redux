@@ -12,6 +12,7 @@ mod sites;
 mod mobalytics;
 mod maxroll;
 mod character;
+mod ggg;
 mod ninja;
 mod links;
 mod diagnostics;
@@ -117,6 +118,7 @@ async fn export_diagnostics(app: tauri::AppHandle, state: State<'_, AppState>, p
     ];
     let mut secrets = ai::stored_keys(&app);
     secrets.extend(mcp::saved_token(&app));
+    secrets.extend(ggg::secrets(&app));
     tauri::async_runtime::spawn_blocking(move || diagnostics::write_report(&app, &path, &facts, &secrets))
         .await
         .map_err(|e| e.to_string())?
@@ -565,16 +567,6 @@ async fn share_build_code(state: State<'_, AppState>, site: String, code: String
 #[tauri::command]
 async fn mobalytics_resolve(url: String) -> Result<mobalytics::Resolved, String> {
     mobalytics::resolve(&url).await
-}
-
-#[tauri::command]
-async fn character_list(realm: String, account: String) -> Result<character::CharacterList, String> {
-    character::list(&realm, &account).await
-}
-
-#[tauri::command]
-async fn character_data(realm: String, account: String, character: String) -> Result<character::CharacterData, String> {
-    character::data(&realm, &account, &character).await
 }
 
 #[tauri::command]
@@ -1285,6 +1277,7 @@ pub fn run() {
             });
             app.manage(decide::DecideState::new(&app.handle().clone()));
             app.manage(voice::VoiceState::new());
+            app.manage(ggg::GggState::default());
             // POB_REDUX_MCP=<port> brings the MCP server up at launch (scripts, tests)
             if let Some(port) = std::env::var("POB_REDUX_MCP").ok().and_then(|v| v.parse::<u16>().ok()) {
                 let handle = app.handle().clone();
@@ -1327,8 +1320,12 @@ pub fn run() {
             fetch_build_code,
             mobalytics_resolve,
             maxroll_resolve,
-            character_list,
-            character_data,
+            ggg::ggg_account,
+            ggg::ggg_sign_in,
+            ggg::ggg_sign_in_cancel,
+            ggg::ggg_sign_out,
+            ggg::ggg_characters,
+            ggg::ggg_character,
             ninja_characters,
             ninja_character_code,
             save_game_build_files,

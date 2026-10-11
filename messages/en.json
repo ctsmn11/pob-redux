@@ -144,7 +144,7 @@
   "welcome_card_first": "Next, bring in a build",
   "welcome_card_empty": "No build is open yet",
   "welcome_step_code": "Paste a build code or link under Import, on the right.",
-  "welcome_step_character": "Find your character by account name, under Character.",
+  "welcome_step_character": "Import your character under Character: sign in with Path of Exile, or find it on poe.ninja by account name.",
   "welcome_step_saved": "Open a build you saved in Path of Building. Your saved builds are listed below.",
   "welcome_step_planner": "Open a plan you made in the game's Build Planner. Your plans are listed below.",
   "welcome_start_new": "Start a new build",
@@ -1448,7 +1448,29 @@
   "import_reimported": "Updated the open build from {name}",
   "import_no_ninja_build": "poe.ninja has no build for this character",
   "import_ninja_blurb": "Imports the build poe.ninja saved for a character. poe.ninja saves builds only for the characters on its ladders, which leaves out low-level and inactive characters.",
-  "import_ggg_blurb": "Imports a character's passive tree, items and gems into a new build. The account's profile and Characters tab must be public on pathofexile.com.",
+  "import_ggg_sign_in": "Sign in with Path of Exile",
+  "import_ggg_sign_out": "Sign out",
+  "import_ggg_waiting": "Finish the sign-in in your browser…",
+  "import_ggg_find": "List my characters",
+  "import_ggg_need_sign_in": "Sign in above to list your characters.",
+  "ggg_account_title": "Path of Exile account",
+  "ggg_reauth_days": [
+    {
+      "declarations": [
+        "input count",
+        "local countPlural = count: plural"
+      ],
+      "selectors": [
+        "countPlural"
+      ],
+      "match": {
+        "countPlural=one": "Re-authenticate in {count} day",
+        "countPlural=*": "Re-authenticate in {count} days"
+      }
+    }
+  ],
+  "ggg_reauth_soon": "Re-authenticate within a day",
+  "ggg_disclaimer": "This product isn't affiliated with or endorsed by Grinding Gear Games in any way.",
   "import_reason_below_cutoff": "under level {level}",
   "import_reason_league_ended": "league ended",
   "import_reason_inactive": "not played recently",

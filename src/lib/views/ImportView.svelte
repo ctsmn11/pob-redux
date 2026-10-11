@@ -18,11 +18,10 @@
     resolveMobalytics,
     isMaxrollGuideLink,
     resolveMaxroll,
-    characterList,
-    characterData,
+    gggCharacters,
+    gggCharacter,
     ninjaCharacters,
     ninjaCharacterCode,
-    type GameCharacter,
     type ReimportOptions,
     saveGameBuildFiles,
     listGameBuilds,
@@ -47,6 +46,7 @@
   import { app } from "$lib/state/app.svelte";
   import { planner, AUTHOR_KEY } from "$lib/state/planner.svelte";
   import { game, GAME_LABEL, type Game } from "$lib/state/game.svelte";
+  import { ggg } from "$lib/state/ggg.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import ClassIcon from "$lib/components/ClassIcon.svelte";
   import Kbd from "$lib/components/Kbd.svelte";
@@ -552,7 +552,6 @@
     minLevel: number | null;
     leagueUrl: string;
     updated: string | null;
-    ggg?: GameCharacter;
   }
   const CHAR_KEY = "pob-redux:character-import";
   let charAccount = $state("");
@@ -568,16 +567,26 @@
     charSource = saved.source === "ninja" ? "ninja" : "ggg";
   } catch {}
 
-  // PoE2 has no public character endpoint on pathofexile.com.
-  const source = $derived<CharSource>(game.isPoe2 ? "ninja" : charSource);
-  const shownList = $derived(charList && charList.source === source && charList.game === game.current ? charList : null);
+  onMount(() => ggg.sync());
+
+  async function signIn() {
+    try {
+      if (await ggg.signIn()) await findCharacters();
+    } catch (e) {
+      build.error = String(e);
+    }
+  }
+
+  const shownList = $derived(
+    charList && charList.source === charSource && charList.game === game.current && (charSource === "ninja" || ggg.account !== null) ? charList : null,
+  );
   const charLeagues = $derived.by(() => {
     const seen = new Map<string, number>();
     for (const c of shownList?.rows ?? []) seen.set(c.league, Math.max(seen.get(c.league) ?? 0, c.when));
     return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([l]) => l);
   });
   const shownCharacters = $derived(
-    (shownList?.rows ?? []).filter((c) => !charLeague || c.league === charLeague).sort((a, b) => b.when - a.when),
+    (shownList?.rows ?? []).filter((c) => !charLeague || c.league === charLeague).sort((a, b) => b.when - a.when || b.level - a.level),
   );
 
   function ninjaReason(c: CharRow): string {
@@ -601,9 +610,9 @@
   }
 
   async function findCharacters() {
-    if (!charAccount.trim() || charBusy) return;
+    const src = charSource;
+    if (charBusy || (src === "ninja" ? !charAccount.trim() : ggg.account === null)) return;
     charBusy = "list";
-    const src = source;
     const g = game.current;
     try {
       if (src === "ninja") {
@@ -625,35 +634,35 @@
             updated: c.updated,
           })),
         };
+        charAccount = r.account;
       } else {
-        const r = await characterList(charRealm, charAccount);
+        const characters = await gggCharacters(charRealm);
         charList = {
           source: src,
           game: g,
-          account: r.account,
-          rows: r.characters.map((c) => ({
-            key: `${c.league}/${c.name}`,
+          account: ggg.account?.name ?? "",
+          rows: characters.map((c) => ({
+            key: `${c.league ?? ""}/${c.name}`,
             name: c.name,
             className: c.class,
             level: c.level,
-            league: c.league,
-            when: c.lastLoginTime ?? 0,
+            league: c.league ?? "",
+            when: c.current ? 1 : 0,
             status: "listed",
             minLevel: null,
             leagueUrl: "",
             updated: null,
-            ggg: c,
           })),
         };
       }
-      charAccount = charList.account;
       charLeague = charLeagues[0] ?? "";
       try {
-        localStorage.setItem(CHAR_KEY, JSON.stringify({ account: charList.account, realm: charRealm, source: charSource }));
+        localStorage.setItem(CHAR_KEY, JSON.stringify({ account: charAccount, realm: charRealm, source: charSource }));
       } catch {}
     } catch (e) {
       charList = null;
       build.error = String(e);
+      if (src === "ggg") await ggg.sync();
     } finally {
       charBusy = null;
     }
@@ -664,15 +673,14 @@
     if (!list || charBusy) return;
     charBusy = c.key;
     try {
-      const name = `${list.account.replace(/[#-]\d+$/, "")} - ${c.name}`;
+      const name = [list.account.replace(/[#-]\d+$/, ""), c.name].filter(Boolean).join(" - ");
       if (list.source === "ninja") {
         const code = await ninjaCharacterCode(list.account, c.name, c.leagueUrl);
         const r = await build.loadCode(code, name);
         if (r) build.say(c.updated ? m.import_imported_ninja({ name: c.name, date: shortDate(c.updated) }) : m.import_imported_ninja_plain({ name: c.name }));
-      } else if (c.ggg) {
-        const ggg = c.ggg;
-        const d = await characterData(charRealm, list.account, c.name);
-        const r = await build.run(() => engine.importCharacter({ character: ggg, passives: d.passives, items: d.items, name }));
+      } else {
+        const data = await gggCharacter(charRealm, c.name);
+        const r = await build.run(() => engine.importCharacter({ data, name }));
         if (r) {
           build.say(m.import_imported({ name: c.name }));
           build.view = "overview";
@@ -680,6 +688,7 @@
       }
     } catch (e) {
       build.error = String(e);
+      if (list.source === "ggg") await ggg.sync();
     } finally {
       charBusy = null;
     }
@@ -697,10 +706,9 @@
       if (list.source === "ninja") {
         const code = await ninjaCharacterCode(list.account, c.name, c.leagueUrl);
         r = await build.run(() => engine.mergeBuild({ code, ...reimport }));
-      } else if (c.ggg) {
-        const ggg = c.ggg;
-        const d = await characterData(charRealm, list.account, c.name);
-        r = await build.run(() => engine.importCharacterInto({ character: ggg, passives: d.passives, items: d.items, ...reimport }));
+      } else {
+        const data = await gggCharacter(charRealm, c.name);
+        r = await build.run(() => engine.importCharacterInto({ data, ...reimport }));
       }
       if (r) {
         updating = null;
@@ -708,6 +716,7 @@
       }
     } catch (e) {
       build.error = String(e);
+      if (list.source === "ggg") await ggg.sync();
     } finally {
       charBusy = null;
     }
@@ -1275,6 +1284,34 @@
   </section>
 
   <section class="col side">
+    <div class="panel-head">
+      <span class="label">{m.ggg_account_title()}</span>
+      {#if ggg.account}
+        <button class="btn sm ghost" onclick={() => ggg.signOut().catch((e) => (build.error = String(e)))} disabled={charBusy !== null}>{m.import_ggg_sign_out()}</button>
+      {/if}
+    </div>
+    <div class="block">
+      {#if ggg.account}
+        <div class="arow">
+          <span class="grow">{ggg.account.name}</span>
+          {#if ggg.daysLeft > 1}
+            <span class="dim small">{m.ggg_reauth_days({ count: ggg.daysLeft })}</span>
+          {:else}
+            <span class="small" style:color="var(--warn)">{m.ggg_reauth_soon()}</span>
+          {/if}
+        </div>
+      {:else if ggg.signingIn}
+        <div class="arow">
+          <span class="dim small grow">{m.import_ggg_waiting()}</span>
+          <button class="btn sm" onclick={() => ggg.cancel()}>{m.common_cancel()}</button>
+        </div>
+      {:else}
+        <div class="actions">
+          <button class="btn primary" onclick={signIn}>{m.import_ggg_sign_in()}</button>
+        </div>
+      {/if}
+    </div>
+
     <div class="panel-head"><span class="label">{m.import_title()}</span></div>
     <div class="block">
       <textarea
@@ -1293,32 +1330,40 @@
 
     <div class="panel-head">
       <span class="label">{m.import_character()}</span>
-      {#if !game.isPoe2}
-        <select class="select sm" bind:value={charSource} title={m.import_source_title()}>
-          <option value="ggg">pathofexile.com</option>
-          <option value="ninja">poe.ninja</option>
-        </select>
-      {/if}
+      <select class="select sm" bind:value={charSource} title={m.import_source_title()}>
+        <option value="ggg">pathofexile.com</option>
+        <option value="ninja">poe.ninja</option>
+      </select>
     </div>
     <div class="block">
-      <div class="charform">
-        <input
-          class="input grow"
-          placeholder={m.import_account_placeholder()}
-          bind:value={charAccount}
-          onkeydown={(e) => e.key === "Enter" && findCharacters()}
-        />
-        {#if source === "ggg"}
-          <select class="select" bind:value={charRealm} title={m.import_realm()}>
-            <option value="pc">{m.import_realm_pc()}</option>
-            <option value="xbox">{m.import_realm_xbox()}</option>
-            <option value="sony">{m.import_realm_sony()}</option>
-          </select>
-        {/if}
-        <button class="btn" onclick={findCharacters} disabled={!charAccount.trim() || charBusy !== null}>
-          {charBusy === "list" ? m.import_finding() : m.import_find()}
-        </button>
-      </div>
+      {#if charSource === "ninja"}
+        <div class="charform">
+          <input
+            class="input grow"
+            placeholder={m.import_account_placeholder()}
+            bind:value={charAccount}
+            onkeydown={(e) => e.key === "Enter" && findCharacters()}
+          />
+          <button class="btn" onclick={findCharacters} disabled={!charAccount.trim() || charBusy !== null}>
+            {charBusy === "list" ? m.import_finding() : m.import_find()}
+          </button>
+        </div>
+      {:else if ggg.account}
+        <div class="charform">
+          {#if !game.isPoe2}
+            <select class="select" bind:value={charRealm} title={m.import_realm()}>
+              <option value="pc">{m.import_realm_pc()}</option>
+              <option value="xbox">{m.import_realm_xbox()}</option>
+              <option value="sony">{m.import_realm_sony()}</option>
+            </select>
+          {/if}
+          <button class="btn" onclick={findCharacters} disabled={charBusy !== null}>
+            {charBusy === "list" ? m.import_finding() : m.import_ggg_find()}
+          </button>
+        </div>
+      {:else}
+        <div class="dim small">{m.import_ggg_need_sign_in()}</div>
+      {/if}
       {#if shownList}
         <div class="charhead">
           <select class="select sm" bind:value={charLeague}>
@@ -1339,7 +1384,7 @@
               <span class="cname" title={c.updated ? m.import_char_title_saved({ name: c.name, league: c.league, date: shortDate(c.updated) }) : m.import_char_title({ name: c.name, league: c.league })}>
                 {c.name}{#if !charLeague}<span class="dim small cleague">{c.league}</span>{/if}
               </span>
-              <span class="dim small"><span style:color={classColour.get(c.className)}>{c.className}</span> <span class="num">{c.level}</span></span>
+              <span class="dim small"><span style:color={classColour.get(c.className)}>{who?.asc ?? c.className}</span> <span class="num">{c.level}</span></span>
               {#if c.status === "listed"}
                 {#if build.info}
                   <button
@@ -1382,10 +1427,8 @@
             {/if}
           {/each}
         </div>
-      {:else if source === "ninja"}
+      {:else if charSource === "ninja"}
         <div class="dim small">{m.import_ninja_blurb()}</div>
-      {:else}
-        <div class="dim small">{m.import_ggg_blurb()}</div>
       {/if}
     </div>
 
@@ -1554,6 +1597,7 @@
       </div>
     {/if}
     {#if flash}<div class="flash">{flash}</div>{/if}
+    <div class="legal dim small">{m.ggg_disclaimer()}</div>
   </section>
 </div>
 
@@ -1573,6 +1617,24 @@
   .col:last-child {
     border-right: 0;
     background: var(--bg-1);
+  }
+  .side {
+    overflow-y: auto;
+  }
+  .side .panel-head {
+    flex: none;
+    background: var(--bg-2);
+    border-top: 1px solid var(--line-0);
+  }
+  .side .panel-head:first-child {
+    border-top: 0;
+  }
+  .side .panel-head > .label {
+    color: var(--fg-1);
+  }
+  .legal {
+    margin-top: auto;
+    padding: 10px;
   }
   .toolbar {
     display: flex;

@@ -563,6 +563,7 @@
             </div>
           </div>
         </div>
+        <p class="note">{m.ggg_disclaimer()}</p>
       {:else if active === "diagnostics"}
         {@render head(m.settings_diagnostics(), m.settings_diagnostics_desc())}
         <div class="rows">

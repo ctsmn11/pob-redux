@@ -248,19 +248,44 @@ export interface ReimportOptions {
 export interface GameCharacter {
   name: string;
   realm: string;
+  /** PoE2 sends an ascendancy's internal id here, such as "Witch2". */
   class: string;
-  league: string;
+  league?: string;
   level: number;
-  lastLoginTime?: number;
+  current?: boolean;
 }
 
-/** `account` comes back with GGG's casing. */
-export function characterList(realm: string, account: string): Promise<{ account: string; characters: GameCharacter[] }> {
-  return invoke<{ account: string; characters: GameCharacter[] }>("character_list", { realm, account });
+export interface GggAccount {
+  name: string;
+  /** Unix seconds. GGG ends the sign-in then, and the user has to sign in again. */
+  endsAt: number;
 }
 
-export function characterData(realm: string, account: string, character: string): Promise<{ passives: string; items: string }> {
-  return invoke<{ passives: string; items: string }>("character_data", { realm, account, character });
+export function gggAccount(): Promise<GggAccount | null> {
+  return invoke<GggAccount | null>("ggg_account");
+}
+
+/** Resolves to null when the user cancelled the sign-in. */
+export function gggSignIn(): Promise<GggAccount | null> {
+  return invoke<GggAccount | null>("ggg_sign_in");
+}
+
+export function gggSignInCancel(): Promise<void> {
+  return invoke<void>("ggg_sign_in_cancel");
+}
+
+export function gggSignOut(): Promise<void> {
+  return invoke<void>("ggg_sign_out");
+}
+
+/** `realm` is ignored in PoE2. */
+export function gggCharacters(realm: string): Promise<GameCharacter[]> {
+  return invoke<GameCharacter[]>("ggg_characters", { realm });
+}
+
+/** The character as JSON text for `engine.importCharacter`. */
+export function gggCharacter(realm: string, name: string): Promise<string> {
+  return invoke<string>("ggg_character", { realm, name });
 }
 
 export interface NinjaCharacter {
@@ -1772,12 +1797,8 @@ export const engine = {
   tradeStatusOptions: () => call<{ options: { id: string; label: string }[] }>("trade_status_options"),
   tradeLeagues: () => call<{ leagues: { id: string; text: string; realm: string | null }[] }>("trade_leagues"),
   importGameBuild: (json: string, name?: string) => call<GameBuildImportResult>("import_game_build", { json, name }),
-  /** PoE1 only. */
-  importCharacter: (p: { character: GameCharacter; passives: string; items: string; name?: string }) =>
-    call<BuildInfo>("import_character", p),
-  /** PoE1 only. */
-  importCharacterInto: (p: { character: GameCharacter; passives: string; items: string } & ReimportOptions) =>
-    call<BuildInfo>("import_character_into", p),
+  importCharacter: (p: { data: string; name?: string }) => call<BuildInfo>("import_character", p),
+  importCharacterInto: (p: { data: string } & ReimportOptions) => call<BuildInfo>("import_character_into", p),
   mergeBuild: (p: { code: string } & ReimportOptions) => call<BuildInfo>("merge_build", p),
   exportGameBuild: (p?: { mode?: PlannerMode; author?: string; link?: string; description?: string }) =>
     call<{ files: GameBuildExport[] }>("export_game_build", p ?? {}),

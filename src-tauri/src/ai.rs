@@ -5,10 +5,10 @@
 //! path, and this module makes the request from Rust and pushes the response
 //! back in chunks.
 //!
-//! The credential store here now only holds the decision backends' keys. They
-//! live in the OS credential store and are never sent to the webview. On
-//! Windows, a key that Credential Manager refuses goes to a DPAPI-encrypted
-//! file instead (`key_file`).
+//! The credential store here holds the decision backends' keys and the
+//! pathofexile.com sign-in. They live in the OS credential store and are
+//! never sent to the webview. On Windows, a key that Credential Manager
+//! refuses goes to a DPAPI-encrypted file instead (`key_file`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -97,7 +97,6 @@ fn known(id: &str) -> Result<(), String> {
 }
 
 fn entry(id: &str) -> Result<keyring::Entry, String> {
-    known(id)?;
     keyring::Entry::new(SERVICE, id).map_err(|e| e.to_string())
 }
 
@@ -252,19 +251,24 @@ pub fn ai_key_set(app: AppHandle, provider: String, key: String) -> Result<(), S
     if key.is_empty() {
         return Err("key is empty".into());
     }
-    let entry = entry(&provider)?;
-    let err = match entry.set_password(key) {
+    known(&provider)?;
+    store_secret(&app, &provider, key)
+}
+
+pub(crate) fn store_secret(app: &AppHandle, id: &str, secret: &str) -> Result<(), String> {
+    let entry = entry(id)?;
+    let err = match entry.set_password(secret) {
         Ok(()) => {
-            key_file::remove(&app, &provider);
+            key_file::remove(app, id);
             return Ok(());
         }
         Err(e) => e,
     };
     #[cfg(windows)]
-    if matches!(err, keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_)) {
+    if matches!(err, keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_) | keyring::Error::TooLong(..)) {
         let reason = keyring_error(err);
-        key_file::write(&app, &provider, key).map_err(|e| format!("{reason} Saving it to an encrypted file instead also failed: {e}"))?;
-        log::warn!("ai: Credential Manager refused the {provider} key ({reason}); saved it to an encrypted file instead");
+        key_file::write(app, id, secret).map_err(|e| format!("{reason} Saving it to an encrypted file instead also failed: {e}"))?;
+        log::warn!("ai: Credential Manager refused the {id} key ({reason}); saved it to an encrypted file instead");
         let _ = entry.delete_credential();
         return Ok(());
     }
@@ -292,8 +296,12 @@ fn keyring_error(e: keyring::Error) -> String {
 #[tauri::command]
 pub fn ai_key_clear(app: AppHandle, provider: String) -> Result<(), String> {
     known(&provider)?;
-    key_file::remove(&app, &provider);
-    match entry(&provider)?.delete_credential() {
+    clear_secret(&app, &provider)
+}
+
+pub(crate) fn clear_secret(app: &AppHandle, id: &str) -> Result<(), String> {
+    key_file::remove(app, id);
+    match entry(id)?.delete_credential() {
         Ok(()) => Ok(()),
         // Clearing a key that was never stored is a success from the UI's side.
         Err(keyring::Error::NoEntry) => Ok(()),

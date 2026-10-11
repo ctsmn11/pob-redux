@@ -166,7 +166,7 @@ Built with [LuaJIT](https://luajit.org) through [mlua](https://github.com/mlua-r
 [rmcp](https://github.com/modelcontextprotocol/rust-sdk) for the MCP server, and the
 [AI SDK](https://ai-sdk.dev) for the assistant.
 
-PoB Redux is not affiliated with Grinding Gear Games.
+This product isn't affiliated with or endorsed by Grinding Gear Games in any way.
 
 ## Licence
 

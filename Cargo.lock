@@ -3703,6 +3703,7 @@ name = "pob-redux"
 version = "0.4.35"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "cpal",
  "getrandom 0.4.3",
  "keyring",

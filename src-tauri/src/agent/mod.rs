@@ -551,7 +551,7 @@ fn session(app: &AppHandle, id: &str) -> Result<Arc<Session>, String> {
     app.state::<AgentState>().sessions.lock().unwrap().get(id).cloned().ok_or_else(|| "the assistant session ended; send the message again".into())
 }
 
-fn random_hex(bytes: usize) -> Result<String, String> {
+pub(crate) fn random_hex(bytes: usize) -> Result<String, String> {
     let mut buf = vec![0u8; bytes];
     getrandom::fill(&mut buf).map_err(|e| e.to_string())?;
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())

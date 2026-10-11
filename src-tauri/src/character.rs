@@ -1,44 +1,6 @@
-use serde::Serialize;
-use serde_json::Value;
-
 const HOST: &str = "https://www.pathofexile.com/";
 /// pathofexile.com's profile pages only answer user agents starting with "Path of Building".
 const UA: &str = "Path of Building (PoB Redux)";
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CharacterList {
-    /// GGG's casing, which the passive and item endpoints need.
-    pub account: String,
-    pub characters: Vec<Value>,
-}
-
-#[derive(Serialize)]
-pub struct CharacterData {
-    pub passives: String,
-    pub items: String,
-}
-
-fn realm_code(realm: &str) -> Result<&'static str, String> {
-    match realm.trim().to_ascii_lowercase().as_str() {
-        "" | "pc" => Ok("pc"),
-        "xbox" => Ok("xbox"),
-        "sony" | "playstation" | "ps4" | "ps5" => Ok("sony"),
-        other => Err(format!("unknown realm {other:?}")),
-    }
-}
-
-fn normalise_account(realm: &str, name: &str) -> String {
-    let name = if realm == "pc" {
-        name.chars().filter(|c| !c.is_whitespace()).collect::<String>()
-    } else {
-        name.trim_matches(|c: char| c.is_whitespace() || c == '?').split_whitespace().collect::<Vec<_>>().join("+")
-    };
-    match name.rfind(['#', '-']) {
-        Some(i) => format!("{}#{}", &name[..i], &name[i + 1..]),
-        None => name,
-    }
-}
 
 pub(crate) fn query_value(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -77,36 +39,6 @@ async fn get(client: &reqwest::Client, url: &str) -> Result<String, String> {
     }
 }
 
-pub async fn list(realm: &str, account: &str) -> Result<CharacterList, String> {
-    let realm = realm_code(realm)?;
-    let account = normalise_account(realm, account);
-    if account.is_empty() {
-        return Err("Enter an account name.".into());
-    }
-    let client = client()?;
-    let body = get(&client, &format!("{HOST}character-window/get-characters?accountName={}&realm={realm}", account_param(&account))).await?;
-    let characters: Vec<Value> = serde_json::from_str(&body).map_err(|_| "pathofexile.com sent a character list this app could not read".to_string())?;
-    if characters.is_empty() {
-        return Err("That account has no characters to import.".into());
-    }
-    // the profile page only corrects the name's casing, so a failure keeps the typed name
-    let real = profile_name(&client, &account)
-        .await
-        .map(|name| {
-            let mut encoded = String::with_capacity(name.len());
-            for b in name.bytes() {
-                if b > 127 {
-                    encoded.push_str(&format!("%{b:02X}"));
-                } else {
-                    encoded.push(b as char);
-                }
-            }
-            normalise_account(realm, &encoded)
-        })
-        .unwrap_or(account);
-    Ok(CharacterList { account: real, characters })
-}
-
 async fn profile_name(client: &reqwest::Client, account: &str) -> Option<String> {
     let page = match get(client, &format!("{HOST}account/view-profile/{}", account_param(account))).await {
         Ok(page) => page,
@@ -125,29 +57,4 @@ async fn profile_name(client: &reqwest::Client, account: &str) -> Option<String>
 
 pub(crate) async fn account_casing(account: &str) -> Option<String> {
     profile_name(&client().ok()?, account).await
-}
-
-pub async fn data(realm: &str, account: &str, character: &str) -> Result<CharacterData, String> {
-    let realm = realm_code(realm)?;
-    let client = client()?;
-    let query = format!("accountName={}&character={}&realm={realm}", account_param(account), query_value(character));
-    let passives = get(&client, &format!("{HOST}character-window/get-passive-skills?{query}")).await?;
-    let items = get(&client, &format!("{HOST}character-window/get-items?{query}")).await?;
-    if passives.trim() == "false" || items.trim() == "false" {
-        return Err("pathofexile.com would not return that character. Try again in a moment.".into());
-    }
-    Ok(CharacterData { passives, items })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::normalise_account;
-
-    #[test]
-    fn account_names() {
-        assert_eq!(normalise_account("pc", "explosive bees-4852"), "explosivebees#4852");
-        assert_eq!(normalise_account("pc", "Name#1234"), "Name#1234");
-        assert_eq!(normalise_account("xbox", "  Gamer Tag#12 "), "Gamer+Tag#12");
-        assert_eq!(normalise_account("pc", "plain"), "plain");
-    }
 }

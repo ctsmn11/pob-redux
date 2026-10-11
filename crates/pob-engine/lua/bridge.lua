@@ -6135,55 +6135,56 @@ M.trade_leagues = function()
 	return { leagues = leagues }
 end
 
--- PoE1 only: the host fetches the character from pathofexile.com and PoB's ImportTab builds it.
+-- The host fetches the character from GGG's account API and PoB's ImportTab builds it.
 function cmpUtil.characterData(p)
-	if IS_POE2 then error("importing a character by account name works for Path of Exile 1 only", 0) end
-	if not p or type(p.character) ~= "table" or type(p.passives) ~= "string" or type(p.items) ~= "string" then
-		error("params.character, params.passives and params.items are required", 0)
-	end
-	local passives = dkjson.decode(p.passives)
-	local items = dkjson.decode(p.items)
-	if type(passives) ~= "table" or type(items) ~= "table" then
+	if not p or type(p.data) ~= "string" then error("params.data is required", 0) end
+	local character = dkjson.decode(p.data)
+	if type(character) ~= "table" or type(character.passives) ~= "table" then
 		error("the character data from pathofexile.com could not be read", 0)
 	end
-	return passives, items
+	if IS_POE2 then
+		-- GGG marks these optional, and PoE2's ImportTab iterates them unguarded.
+		for _, key in ipairs({ "equipment", "jewels", "skills" }) do character[key] = character[key] or {} end
+		local passives = character.passives
+		for _, key in ipairs({ "hashes", "specialisations", "skill_overrides", "jewel_data", "quest_stats" }) do passives[key] = passives[key] or {} end
+	end
+	return character
 end
 
-function cmpUtil.importCharacterParts(p, passives, items, tree, gear)
+function cmpUtil.importCharacterParts(character, tree, gear)
 	local importTab = build.importTab
-	passives.bandit_choice = passives.bandit_choice or build.configTab.input.bandit
-	passives.pantheon_major = passives.pantheon_major or build.configTab.input.pantheonMajorGod
-	passives.pantheon_minor = passives.pantheon_minor or build.configTab.input.pantheonMinorGod
+	-- PoE2's ImportTab reads its options from its own checkboxes; PoE1's takes them as arguments.
+	local options = importTab.controls
 	if tree then
-		local treeData = copyTable(p.character)
-		treeData.passives = passives
-		treeData.jewels = passives.items
-		importTab:ImportPassiveTreeAndJewels(treeData, tree.deleteJewels)
+		if IS_POE2 then options.charImportTreeClearJewels.state = tree.deleteJewels end
+		importTab:ImportPassiveTreeAndJewels(copyTable(character), tree.deleteJewels)
 	end
 	if gear then
-		local gearData = copyTable(p.character)
-		gearData.equipment = items.items
-		gearData.guardian = items.guardian
-		importTab:ImportItemsAndSkills(gearData, gear.deleteEquipment, gear.deleteSkills, gear.ignoreWeaponSwap)
+		if IS_POE2 then
+			options.charImportItemsClearItems.state = gear.deleteEquipment
+			options.charImportItemsClearSkills.state = gear.deleteSkills
+			options.charImportItemsIgnoreWeaponSwap.state = gear.ignoreWeaponSwap
+		end
+		importTab:ImportItemsAndSkills(copyTable(character), gear.deleteEquipment, gear.deleteSkills, gear.ignoreWeaponSwap)
 	end
 end
 
 M.import_character = function(p)
-	local passives, items = cmpUtil.characterData(p)
-	main:SetMode("BUILD", false, (type(p.name) == "string" and p.name) or p.character.name or "Imported character")
+	local character = cmpUtil.characterData(p)
+	main:SetMode("BUILD", false, (type(p.name) == "string" and p.name) or character.name or "Imported character")
 	frame()
 	build = main.modes["BUILD"]
 	ensureBuild()
-	cmpUtil.importCharacterParts(p, passives, items, { deleteJewels = true }, { deleteEquipment = true, deleteSkills = true, ignoreWeaponSwap = false })
+	cmpUtil.importCharacterParts(character, { deleteJewels = true }, { deleteEquipment = true, deleteSkills = true, ignoreWeaponSwap = false })
 	refresh()
 	return M.get_build()
 end
 
 M.import_character_into = function(p)
 	ensureBuild()
-	local passives, items = cmpUtil.characterData(p)
+	local character = cmpUtil.characterData(p)
 	if not p.tree and not p.gear then error("choose the passive tree, the items and skills, or both", 0) end
-	cmpUtil.importCharacterParts(p, passives, items,
+	cmpUtil.importCharacterParts(character,
 		p.tree and { deleteJewels = p.deleteJewels == true } or nil,
 		p.gear and { deleteEquipment = p.deleteEquipment == true, deleteSkills = p.deleteSkills == true, ignoreWeaponSwap = p.ignoreWeaponSwap == true } or nil)
 	build.itemsTab:AddUndoState()
