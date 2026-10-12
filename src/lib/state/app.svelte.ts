@@ -42,8 +42,8 @@ class AppStore {
         } catch (e) {
           s = { state: "error", message: String(e), boot_ms: null, pob_root: "", user_dir: "" };
         }
-        this.status = s;
-        if (s.state === "booting") this.timer = window.setTimeout(poll, 150);
+        if (s.state !== "booting" || this.status?.state !== "booting") this.status = s;
+        if (s.state === "booting") this.timer = window.setTimeout(poll, 25);
         else resolve(s);
       };
       poll();
