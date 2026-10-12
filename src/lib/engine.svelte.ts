@@ -259,6 +259,8 @@ export interface GggAccount {
   name: string;
   /** Unix seconds. GGG ends the sign-in then, and the user has to sign in again. */
   endsAt: number;
+  /** False for a sign-in made before the app asked for trade access. */
+  trade: boolean;
 }
 
 export function gggAccount(): Promise<GggAccount | null> {
@@ -286,6 +288,116 @@ export function gggCharacters(realm: string): Promise<GameCharacter[]> {
 /** The character as JSON text for `engine.importCharacter`. */
 export function gggCharacter(realm: string, name: string): Promise<string> {
   return invoke<string>("ggg_character", { realm, name });
+}
+
+export type GggTradeReply = { kind: "reply"; status: number; body: string } | { kind: "wait"; seconds: number };
+
+/** Sends one request from `engine.tradeResultsStart`. On "wait", send it again after that many seconds. */
+export function gggTradeRequest(url: string, body: string | null): Promise<GggTradeReply> {
+  return invoke<GggTradeReply>("ggg_trade_request", { url, body });
+}
+
+export interface TradeRequest {
+  id: number;
+  kind: "search" | "fetch";
+  url: string;
+  body: string | null;
+}
+
+export interface TradeResult {
+  /** Position in PoB's result list, which `tradeResultQuery` takes. */
+  index: number;
+  name: string;
+  rarity: string | null;
+  raw: string;
+  amount: number;
+  currency: string;
+  priceType: string | null;
+  whisper: string | null;
+  trader: string | null;
+  weight: number;
+  /** Weighted mean of `stats`, in percent. */
+  score: number | null;
+  stats: { label: string; stat: string; change: number }[];
+}
+
+export interface TradeLive {
+  requests: TradeRequest[];
+  done: boolean;
+  error: string | null;
+  results: TradeResult[] | null;
+  /** A price sort fell back to stat value because PoB has no currency rates for the league. */
+  unpriced: boolean;
+  queryId: string | null;
+  equipSlot: string | null;
+}
+
+export type TradeSort = "StatValue" | "StatValuePrice" | "Price" | "Weight";
+
+export interface TradeWeight {
+  stat: string;
+  weightMult: number;
+}
+
+/** A slot row, or one of PoB's unique-item rows with the socket or ring its item would go in. */
+export interface TradeTarget {
+  slotName?: string;
+  special?: string;
+  nodeId?: number;
+  ringSlot?: string;
+}
+
+export interface TradeRow {
+  key: string;
+  slot: string | null;
+  label: string;
+  itemName: string | null;
+  itemRarity: string | null;
+  special: string | null;
+  needs: "socket" | "ring" | null;
+}
+
+export interface TradeModFilter {
+  tradeId: string;
+  value?: number;
+}
+
+/** Null lists and false flags are options the open game's Path of Building does not have. */
+export interface TradeOptions {
+  currencies: { id: string; name: string }[];
+  realms: string[];
+  jewelTypes: string[];
+  sorts: TradeSort[];
+  runeBehaviours: string[] | null;
+  anointBehaviours: string[] | null;
+  eldritch: string[] | null;
+  enchantModes: string[] | null;
+  links: boolean;
+  scourge: boolean;
+  talisman: boolean;
+}
+
+export interface TradeQueryOptions extends TradeTarget {
+  statWeights?: TradeWeight[];
+  status?: string;
+  includeCorrupted?: boolean;
+  includeMirrored?: boolean;
+  includeRunes?: boolean;
+  maxLevel?: number;
+  maxPrice?: number;
+  maxPriceType?: string;
+  sockets?: number;
+  links?: number;
+  jewelType?: string;
+  runeBehaviour?: string;
+  anointBehaviour?: string;
+  includeEldritch?: string;
+  copyEnchantMode?: string;
+  includeScourge?: boolean;
+  includeTalisman?: boolean;
+  includeAllWEMods?: boolean;
+  requiredMods?: TradeModFilter[];
+  blockedMods?: TradeModFilter[];
 }
 
 export interface NinjaCharacter {
@@ -1781,21 +1893,27 @@ export const engine = {
   addSharedItem: (p: { itemId?: number; raw?: string }) => call<{ items: SharedItem[] }>("add_shared_item", p),
   removeSharedItem: (index: number) => call<{ items: SharedItem[] }>("remove_shared_item", { index }),
   equipSharedItem: (index: number, slotName?: string) => call<unknown>("equip_shared_item", { index, slotName }),
-  tradeSearchStart: (p: {
-    slotName: string;
-    statWeights?: { stat: string; weightMult: number }[];
-    includeCorrupted?: boolean;
-    includeRunes?: boolean;
-    includeMirrored?: boolean;
-    maxLevel?: number;
-    sockets?: number;
-    jewelType?: string;
-    status?: string;
-  }) => call<{ started: boolean }>("trade_search_start", p),
+  tradeSearchStart: (p: TradeQueryOptions) => call<{ started: boolean }>("trade_search_start", p),
   tradeSearchStep: (steps?: number) => call<{ done: boolean }>("trade_search_step", { steps }),
   tradeSearchResult: () => call<{ query: string }>("trade_search_result"),
+  /** `query` runs a generated search; `url` prices a pasted trade link. */
+  tradeResultsStart: (p: TradeTarget & { query?: string; url?: string; league: string; realm?: string; pages?: number; sort?: TradeSort; statWeights?: TradeWeight[] }) =>
+    call<TradeLive>("trade_results_start", p),
+  tradeResultsReply: (p: { id: number; status: number; body: string }) => call<TradeLive>("trade_results_reply", p),
+  /** A row's listings again, weighed against the build as it is now. */
+  tradeResults: (p: { key: string; sort?: TradeSort; statWeights?: TradeWeight[] }) =>
+    call<{ results: TradeResult[]; unpriced: boolean }>("trade_results", p),
+  tradeResultQuery: (p: { key: string; index: number }) => call<{ query: string }>("trade_result_query", p),
+  tradeRows: () =>
+    call<{ rows: TradeRow[]; sockets: { nodeId: number; label: string; slot: string }[]; rings: { slot: string; label: string }[] }>("trade_rows"),
+  tradeOptions: () => call<TradeOptions>("trade_options"),
+  tradeMods: (p: { slotName: string; jewelType?: string }) => call<{ mods: { tradeId: string; text: string; type: string }[] }>("trade_mods", p),
+  /** Divine value of each currency in the league, from PoB's own exchange data. */
+  tradeRates: (p: { league: string; realm?: string }) => call<{ rates: Record<string, number> | null; notice: string | null }>("trade_rates", p),
+  tradeWeightsGet: () => call<{ weights: TradeWeight[] }>("trade_weights_get"),
+  tradeWeightsSet: (weights: TradeWeight[]) => call<{ weights: TradeWeight[] }>("trade_weights_set", { weights }),
   tradeStatusOptions: () => call<{ options: { id: string; label: string }[] }>("trade_status_options"),
-  tradeLeagues: () => call<{ leagues: { id: string; text: string; realm: string | null }[] }>("trade_leagues"),
+  tradeLeagues: (realm?: string) => call<{ leagues: { id: string; text: string; realm: string | null }[] }>("trade_leagues", { realm }),
   importGameBuild: (json: string, name?: string) => call<GameBuildImportResult>("import_game_build", { json, name }),
   importCharacter: (p: { data: string; name?: string }) => call<BuildInfo>("import_character", p),
   importCharacterInto: (p: { data: string } & ReimportOptions) => call<BuildInfo>("import_character_into", p),

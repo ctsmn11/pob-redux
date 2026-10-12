@@ -6015,11 +6015,6 @@ local tradeGen, tradeState
 -- The trade site's listing filter, in the order TradeQueryGenerator indexes it.
 local TRADE_STATUS = { "securable", "available", "onlineleague", "online", "any" }
 
--- A jewel socket has no base type to infer from, so the caller picks one.
--- The generator appends "Jewel" to this, so only these three read back as a
--- category it knows.
-local TRADE_JEWEL_TYPES = { Base = true, Abyss = true, Any = true }
-
 M.trade_status_options = function()
 	local out = array({})
 	local labels = {
@@ -6035,16 +6030,29 @@ M.trade_status_options = function()
 	return { options = out }
 end
 
-M.trade_search_start = function(p)
-	ensureBuild()
-	local slot = build.itemsTab.slots[p and p.slotName or ""]
-	if not slot then error("unknown slot " .. tostring(p and p.slotName), 0) end
+function itemUtil.tradeGenerator()
 	if not tradeGen then
 		tradeGen = new("TradeQueryGenerator"):TradeQueryGenerator({ itemsTab = build.itemsTab })
 	end
 	tradeGen.itemsTab = build.itemsTab
+	return tradeGen
+end
+
+function itemUtil.tradeHelpers()
+	if not itemUtil.tradeHelperModule then
+		itemUtil.tradeHelperModule = IS_POE2 and LoadModule("Classes/TradeHelpers") or require("Classes.TradeHelpers")
+	end
+	return itemUtil.tradeHelperModule
+end
+
+-- With no list, the weights saved in the build, or PoB's defaults for a build that has none.
+function itemUtil.tradeWeights(list)
+	if type(list) ~= "table" or not list[1] then
+		local saved = build.itemsTab.tradeQuery.statSortSelectionList
+		list = saved and saved[1] and saved or { { stat = "FullDPS", weightMult = 1 }, { stat = "TotalEHP", weightMult = 0.5 } }
+	end
 	local weights = {}
-	for _, w in ipairs((p and p.statWeights) or { { stat = "FullDPS", weightMult = 1 } }) do
+	for _, w in ipairs(list) do
 		local found
 		for _, s in ipairs(data.powerStatList) do
 			if s.stat == w.stat then found = s break end
@@ -6056,30 +6064,264 @@ M.trade_search_start = function(p)
 			weightMult = tonumber(w.weightMult) or 1,
 		}
 	end
-	local options = {
-		statWeights = weights,
-		includeCorrupted = p and p.includeCorrupted and true or false,
-		includeRunes = p and p.includeRunes and true or false,
-		includeMirrored = p and p.includeMirrored and true or false,
-		maxLevel = tonumber(p and p.maxLevel),
-		sockets = tonumber(p and p.sockets),
-		jewelType = (p and p.jewelType) or "Base",
+	return weights
+end
+
+M.trade_weights_get = function()
+	ensureBuild()
+	local weights = array({})
+	for _, w in ipairs(build.itemsTab.tradeQuery.statSortSelectionList or {}) do
+		weights[#weights + 1] = { stat = w.stat, weightMult = w.weightMult }
+	end
+	return { weights = weights }
+end
+
+-- PoB saves these with the build, as TradeSearchWeights.
+M.trade_weights_set = function(p)
+	ensureBuild()
+	if type(p) ~= "table" or type(p.weights) ~= "table" or not p.weights[1] then
+		error("params.weights needs at least one stat", 0)
+	end
+	build.itemsTab.tradeQuery.statSortSelectionList = itemUtil.tradeWeights(p.weights)
+	build.itemsTab.modFlag = true
+	build.modFlag = true
+	return M.trade_weights_get()
+end
+
+function itemUtil.tradeRealm(realm)
+	if IS_POE2 then return "poe2" end
+	return (realm == "xbox" or realm == "sony") and realm or "pc"
+end
+
+-- PoB's "other trades" rows: unique items searched by name and weighed by their own mods.
+function itemUtil.tradeSpecials()
+	if IS_POE2 then
+		return { { name = "Megalomaniac", needs = "socket" }, { name = "Heart of the Well", needs = "socket" }, { name = "Against the Darkness", needs = "socket" } }
+	end
+	return { { name = "Megalomaniac" }, { name = "Watcher's Eye", needs = "socket" }, { name = "Pearl of Tsoatha", needs = "ring" } }
+end
+
+function itemUtil.tradeSockets()
+	pcall(build.itemsTab.UpdateSockets, build.itemsTab)
+	local sockets = array({})
+	for nodeId, slot in pairs(build.itemsTab.sockets or {}) do
+		local node = build.spec.nodes[nodeId]
+		if not slot.inactive and not (node and node.containJewelSocket) then
+			sockets[#sockets + 1] = { nodeId = nodeId, label = slot.label or slot.slotName, slot = slot.slotName }
+		end
+	end
+	table.sort(sockets, function(a, b) return a.label < b.label end)
+	return sockets
+end
+
+-- A row is a slot, or a special row with the socket or ring its item would go in.
+function itemUtil.tradeTarget(p)
+	local itemsTab = build.itemsTab
+	if p and p.special then
+		local def
+		for _, special in ipairs(itemUtil.tradeSpecials()) do
+			if special.name == p.special then def = special end
+		end
+		if not def then error("unknown trade row " .. tostring(p.special), 0) end
+		local slotTbl = { slotName = def.name, unique = true, alreadyCorrupted = def.name == "Megalomaniac" or nil }
+		local slot
+		if def.needs == "ring" then
+			slot = itemsTab.slots[tostring(p.ringSlot or "Ring 1")]
+			if not slot or not slot.slotName:find("^Ring %d") then error("choose a ring slot for " .. def.name, 0) end
+			slotTbl.selectedSlotName = slot.slotName
+		else
+			local first = itemUtil.tradeSockets()[1]
+			local nodeId = tonumber(p.nodeId) or (first and first.nodeId)
+			slot = nodeId and itemsTab.sockets[nodeId] or nil
+			if slot and slot.inactive then slot = nil end
+			if def.needs == "socket" and not slot then error(def.name .. " needs an allocated jewel socket", 0) end
+			slotTbl.selectedJewelNodeId = slot and slot.nodeId or nil
+		end
+		return { key = "special:" .. def.name, special = def.name, slot = slot, slotTbl = slotTbl }
+	end
+	local slot = itemsTab.slots[p and p.slotName or ""]
+	if not slot then error("unknown slot " .. tostring(p and p.slotName), 0) end
+	return { key = slot.slotName, slot = slot, slotTbl = { slotName = slot.slotName, nodeId = slot.nodeId } }
+end
+
+M.trade_rows = function()
+	local rows = array({})
+	for _, s in ipairs(M.list_slots().slots) do
+		if s.shown and not s.inactive then
+			rows[#rows + 1] = {
+				key = s.slot, slot = s.slot, label = s.label ~= null and s.label or s.slot,
+				itemName = s.itemName, itemRarity = s.itemRarity, special = null, needs = null,
+			}
+		end
+	end
+	for _, def in ipairs(itemUtil.tradeSpecials()) do
+		rows[#rows + 1] = {
+			key = "special:" .. def.name, slot = null, label = def.name,
+			itemName = null, itemRarity = "UNIQUE", special = def.name, needs = opt(def.needs),
+		}
+	end
+	local rings = array({})
+	for i = 1, 3 do
+		local slot = build.itemsTab.slots["Ring " .. i]
+		if slot and (type(slot.shown) ~= "function" or slot.shown()) then
+			rings[#rings + 1] = { slot = slot.slotName, label = slot.label or slot.slotName }
+		end
+	end
+	return { rows = rows, sockets = itemUtil.tradeSockets(), rings = rings }
+end
+
+-- What the Trader offers in this game. The option values are the strings PoB's own code compares against.
+M.trade_options = function()
+	ensureBuild()
+	local gen = itemUtil.tradeGenerator()
+	local currencies = array({})
+	local i = 1
+	while true do
+		-- The currency list is a local of the generator's file, reachable as an upvalue of StartQuery.
+		local name, value = debug.getupvalue(gen.StartQuery, i)
+		if not name then break end
+		if name == "currencyTable" then
+			for _, currency in ipairs(value) do
+				currencies[#currencies + 1] = { id = currency.id or "", name = currency.name }
+			end
+		end
+		i = i + 1
+	end
+	local behaviours = array({ "Copy Current", "Keep", "Remove" })
+	return {
+		currencies = currencies,
+		realms = array(IS_POE2 and { "poe2" } or { "pc", "xbox", "sony" }),
+		jewelTypes = array(IS_POE2 and { "Base", "Radius", "Any" } or { "Base", "Abyss", "Any" }),
+		sorts = array({ "StatValue", "StatValuePrice", "Price", "Weight" }),
+		runeBehaviours = IS_POE2 and behaviours or null,
+		anointBehaviours = IS_POE2 and behaviours or null,
+		eldritch = not IS_POE2 and array({ "Copy Current", "Keep regular", "Keep regular+presence", "Remove" }) or null,
+		enchantModes = not IS_POE2 and array({ "Keep", "Copy Current", "Remove" }) or null,
+		links = not IS_POE2,
+		scourge = not IS_POE2,
+		talisman = not IS_POE2,
 	}
-	if not TRADE_JEWEL_TYPES[options.jewelType] then
-		error("jewelType must be Base, Abyss or Any", 0)
+end
+
+-- The stats PoB offers as required or blocked filters for a slot: its item category's mods, then pseudo stats.
+M.trade_mods = function(p)
+	ensureBuild()
+	local slot = build.itemsTab.slots[p and p.slotName or ""]
+	if not slot then error("unknown slot " .. tostring(p and p.slotName), 0) end
+	local gen, helpers = itemUtil.tradeGenerator(), itemUtil.tradeHelpers()
+	local _, category = helpers.getTradeCategory(slot.slotName, build.itemsTab.items[slot.selItemId])
+	if category == "Jewel" then category = tostring(p.jewelType or "Base") .. category end
+	local mods, seen = array({}), {}
+	for _, modType in ipairs({ "Explicit", "Implicit", "Corrupted" }) do
+		for _, modData in pairs(gen.modData[modType] or {}) do
+			local tradeMod = modData.tradeMod
+			if category and modData[category] ~= nil and tradeMod and not seen[tradeMod.id] then
+				seen[tradeMod.id] = true
+				mods[#mods + 1] = { tradeId = tradeMod.id, text = tradeMod.text, type = modType }
+			end
+		end
+	end
+	table.sort(mods, function(a, b) return a.text < b.text end)
+	local skipped = { "^pseudo.lake", "^pseudo.pseudo_lake", "^pseudo.pseudo_logbook", "^pseudo.pseudo_temple", "^pseudo.pseudo_map", "^pseudo.pseudo_ritual" }
+	for _, group in ipairs(helpers.getTradeStats() or {}) do
+		if group.id == "pseudo" then
+			for _, entry in ipairs(group.entries or {}) do
+				local keep = true
+				for _, pattern in ipairs(skipped) do
+					if entry.id:find(pattern) then keep = false end
+				end
+				if keep then mods[#mods + 1] = { tradeId = entry.id, text = entry.text, type = "Pseudo" } end
+			end
+		end
+	end
+	return { mods = mods }
+end
+
+function itemUtil.tradeModFilters(list)
+	local out = {}
+	for _, entry in ipairs(type(list) == "table" and list or {}) do
+		if type(entry.tradeId) == "string" and entry.tradeId ~= "" then
+			out[#out + 1] = { tradeId = entry.tradeId, value = tonumber(entry.value) }
+		end
+	end
+	return out[1] and out or nil
+end
+
+M.trade_search_start = function(p)
+	ensureBuild()
+	p = p or {}
+	local target = itemUtil.tradeTarget(p)
+	local gen = itemUtil.tradeGenerator()
+	local slot = target.slot
+	local name = slot and slot.slotName or ""
+	local isJewel = name:find("Jewel") ~= nil
+	local isAbyssal = name:find("Abyssal") ~= nil
+	local options = {
+		statWeights = itemUtil.tradeWeights(p.statWeights),
+		includeCorrupted = p.includeCorrupted == true and not target.slotTbl.alreadyCorrupted,
+		includeMirrored = p.includeMirrored == true,
+		maxLevel = tonumber(p.maxLevel),
+		maxPrice = tonumber(p.maxPrice),
+		maxPriceType = type(p.maxPriceType) == "string" and p.maxPriceType ~= "" and p.maxPriceType or nil,
+		requiredMods = itemUtil.tradeModFilters(p.requiredMods),
+		blockedMods = itemUtil.tradeModFilters(p.blockedMods),
+		jewelType = "Base",
+	}
+	if target.special then
+		options.special = { itemName = target.special }
+		options.includeAllWEMods = p.includeAllWEMods == true or nil
+	end
+	if isAbyssal then
+		options.jewelType = "Abyss"
+	elseif isJewel and not target.special then
+		local allowed = IS_POE2 and { Base = true, Radius = true, Any = true } or { Base = true, Abyss = true, Any = true }
+		options.jewelType = p.jewelType or "Base"
+		if not allowed[options.jewelType] then
+			error("jewelType must be Base, " .. (IS_POE2 and "Radius" or "Abyss") .. " or Any", 0)
+		end
+	end
+	-- Each option below applies to the slots PoB's own Query Options popup offers it for.
+	local plainSlot = slot and not target.special and not isJewel and not isAbyssal and not name:find("Flask")
+	local jewellery = name:find("Belt") or name:find("Ring") or name:find("Amulet")
+	gen.lastAugmentBehaviour, gen.lastAnointBehaviour, gen.lastIncludeEldritch, gen.lastCopyEnchantMode = nil, nil, nil, nil
+	if IS_POE2 then
+		if plainSlot and not jewellery and not name:find("Charm") then options.sockets = tonumber(p.sockets) end
+		local augmentable = name:find("Weapon 1") or name:find("Weapon 2") or name:find("Helmet") or name:find("Body Armour") or name:find("Gloves") or name:find("Boots")
+		if augmentable and not target.special and p.runeBehaviour then
+			gen.lastAugmentBehaviour = p.runeBehaviour
+			options.includeRunes = p.runeBehaviour == "Keep"
+		else
+			options.includeRunes = p.includeRunes == true
+		end
+		if name:find("Amulet") and not target.special then gen.lastAnointBehaviour = p.anointBehaviour end
+	else
+		if plainSlot then
+			options.sockets = tonumber(p.sockets)
+			if not jewellery then options.links = tonumber(p.links) end
+		end
+		if not target.special then
+			local eldritch = { ["Body Armour"] = true, Helmet = true, Gloves = true, Boots = true, Amulet = true }
+			if eldritch[name] and p.includeEldritch then
+				options.includeEldritch = p.includeEldritch
+				gen.lastIncludeEldritch = p.includeEldritch
+			end
+			if name == "Amulet" or name == "Belt" or name == "Weapon 1" or name == "Weapon 2" then gen.lastCopyEnchantMode = p.copyEnchantMode end
+			if name == "Amulet" then options.includeTalisman = p.includeTalisman == true end
+			if not isJewel and not isAbyssal then options.includeScourge = p.includeScourge == true end
+		end
 	end
 	local statusIndex = 4
-	if p and p.status then
+	if p.status then
 		statusIndex = nil
 		for i, id in ipairs(TRADE_STATUS) do
 			if id == p.status then statusIndex = i break end
 		end
 		if not statusIndex then error("unknown trade status " .. tostring(p.status), 0) end
 	end
-	tradeGen.tradeTypeIndex = statusIndex
+	gen.tradeTypeIndex = statusIndex
 	tradeState = { done = false }
-	tradeGen.requesterContext = nil
-	tradeGen.requesterCallback = function(_, query, errMsg)
+	gen.requesterContext = nil
+	gen.requesterCallback = function(_, query, errMsg)
 		tradeState.done = true
 		-- PoE2's generator hands back the bare filter table; PoE1's still sends the full JSON body.
 		if type(query) == "table" then
@@ -6088,8 +6330,8 @@ M.trade_search_start = function(p)
 		tradeState.query = query
 		tradeState.err = errMsg and tostring(errMsg) or nil
 	end
-	tradeGen:StartQuery(slot, options)
-	if not tradeGen.calcContext or not tradeGen.calcContext.co then
+	gen:StartQuery(slot, options)
+	if not gen.calcContext or not gen.calcContext.co then
 		-- StartQuery bailed (unsupported slot/item type)
 		if not tradeState.done then error("this slot's item type is not supported for trade search generation", 0) end
 	end
@@ -6115,24 +6357,291 @@ M.trade_search_result = function()
 	return { query = tradeState.query }
 end
 
-M.trade_leagues = function()
+-- With a realm, that realm's leagues. Without one, each league once, as the links built before realms needed.
+M.trade_leagues = function(p)
 	local api = IS_POE2 and "trade2" or "trade"
 	local body, err = native.http_get("https://www.pathofexile.com/api/" .. api .. "/data/leagues", "Path of Building/" .. (launch and launch.versionNumber or "2"))
 	if not body then error(err or "download failed", 0) end
 	local decoded = dkjson.decode(body)
-	-- GGG repeats every league once per realm (pc, xbox and sony on PoE1; poe2
-	-- and its consoles on PoE2). The trade links this app builds carry no realm,
-	-- so keep the first entry for each league and drop the rest.
+	local realm = p and p.realm and itemUtil.tradeRealm(p.realm)
 	local leagues = array({})
 	local seen = {}
 	for _, l in ipairs((decoded and decoded.result) or {}) do
-		if l.id and not seen[l.id] then
+		if l.id and not seen[l.id] and (not realm or l.realm == realm) then
 			seen[l.id] = true
 			leagues[#leagues + 1] = { id = l.id, text = l.text or l.id, realm = opt(l.realm) }
 		end
 	end
 	if #leagues == 0 then error("league list unavailable", 0) end
 	return { leagues = leagues }
+end
+
+-- PoB's currency rates, which the price sorts need. Its own downloader does nothing headless, so it is lent a plain GET.
+M.trade_rates = function(p)
+	ensureBuild()
+	if type(p) ~= "table" or type(p.league) ~= "string" then error("params.league is required", 0) end
+	local tq = build.itemsTab.tradeQuery
+	local realm = itemUtil.tradeRealm(p.realm)
+	tq.pbRealm, tq.pbLeague = realm, p.league
+	tq.controls.pbNotice = tq.controls.pbNotice or {}
+	tq.controls.pbNotice.label = nil
+	local kept = rawget(launch, "DownloadPage")
+	launch.DownloadPage = function(_, url, callback)
+		local body, err = native.http_get(url, "Path of Building/" .. (launch.versionNumber or "2"))
+		if body then callback({ body = body, header = "" }, nil) else callback(nil, err or "download failed") end
+	end
+	local ok, err = pcall(tq.PullCXData, tq)
+	launch.DownloadPage = kept
+	if not ok then error(err, 0) end
+	local rates = {}
+	local map = tq.pbCurrencyConversion[realm] and tq.pbCurrencyConversion[realm][p.league]
+	for currency, value in pairs(type(map) == "table" and map or {}) do
+		if type(value) == "number" and value == value and value ~= math.huge then rates[currency] = value end
+	end
+	return { rates = next(rates) and rates or null, notice = opt(tq.controls.pbNotice.label) }
+end
+
+-- Live results: PoB's TradeQuery queues its searches, and the host sends each one with the user's sign-in.
+function itemUtil.liveDrain(live)
+	local out = array({})
+	for kind, queue in pairs(live.requests.requestQueue) do
+		while queue[1] do
+			local request = table.remove(queue, 1)
+			itemUtil.liveId = (itemUtil.liveId or 0) + 1
+			live.pending[itemUtil.liveId] = request
+			out[#out + 1] = { id = itemUtil.liveId, kind = kind, url = request.url, body = opt(request.body) }
+		end
+	end
+	return out
+end
+
+function itemUtil.liveStats(weights, base, evaluation)
+	local function value(output, stat)
+		local v = tonumber(output[stat]) or 0
+		if stat == "FullDPS" and v == 0 then
+			v = (tonumber(output.TotalDPS) or 0) + (tonumber(output.TotalDotDPS) or 0) + (tonumber(output.CombinedDPS) or 0)
+		end
+		return v
+	end
+	local stats, weightSum, score = array({}), 0, 0
+	for i, statTable in ipairs(weights) do
+		local detail = evaluation.statDetails and evaluation.statDetails[i]
+		local change = detail and detail.percentChange
+		if not change then
+			-- PoE1's TradeQuery reports no per-stat change, so it comes from the weighted outputs it keeps.
+			local before, after = value(base, statTable.stat), value(evaluation.output, statTable.stat)
+			local ratio = before ~= 0 and after / before or 1
+			change = statTable.transform and (statTable.transform(ratio) - statTable.transform(1)) * 100 or (ratio - 1) * 100
+		end
+		if change ~= change then change = 0 end
+		change = math.max(-99999, math.min(99999, change))
+		stats[#stats + 1] = { label = statTable.label, stat = statTable.stat, change = change }
+		weightSum = weightSum + statTable.weightMult
+		score = score + change * statTable.weightMult
+	end
+	return stats, weightSum > 0 and score / weightSum or null
+end
+
+-- What PoB's Trader does to found items before it weighs them: the rune, anoint, eldritch and enchant choices.
+function itemUtil.liveAdjust(live, safe)
+	local gen, itemsTab, slotName = live.tq.tradeQueryGenerator, build.itemsTab, live.row.target.slotTbl.slotName
+	for _, entry in ipairs(safe) do
+		pcall(function()
+			local item = new("Item"):Item(entry.item_string)
+			if not item.base then return end
+			if IS_POE2 then
+				if gen.lastAugmentBehaviour == "Copy Current" or gen.lastAnointBehaviour == "Copy Current" then
+					if not item.type then return end
+					itemsTab:CopyAnointsAndAugments(item, true, true, slotName)
+				elseif gen.lastAugmentBehaviour == "Remove" then
+					local validRunes = itemsTab:GetValidRunesForItem(item)
+					for index, rune in ipairs(item.runes or {}) do
+						if not itemsTab:IsSocketBoundRune(item, rune, validRunes) then item.runes[index] = "None" end
+					end
+					item:UpdateRunes()
+				elseif gen.lastAnointBehaviour == "Remove" then
+					item.enchantModLines = {}
+				else
+					return
+				end
+			else
+				item:NormaliseQuality()
+				if gen.lastIncludeEldritch == "Copy Current" or gen.lastCopyEnchantMode == "Copy Current" then
+					itemsTab:CopyAnointsAndEldritchImplicits(item, true, true, slotName)
+				elseif gen.lastIncludeEldritch == "Remove" then
+					if item.tangle or item.cleansing then item.implicitModLines = {} end
+				elseif gen.lastCopyEnchantMode == "Remove" then
+					item.enchantModLines = {}
+				end
+			end
+			entry.item_string = item:BuildRaw()
+		end)
+	end
+end
+
+-- A row's stored listings in one of PoB's four orders, each weighed against the build as it is now.
+function itemUtil.liveList(key, sort, weights)
+	local tq = build.itemsTab.tradeQuery
+	local entries = tq.resultTbl[key]
+	if not entries then error("this row has no trade results", 0) end
+	tq.sortModes = tq.sortModes or {
+		StatValue = "(Highest) Stat Value",
+		StatValuePrice = "Stat Value / Price",
+		Price = "(Lowest) Price",
+		Weight = "(Highest) Weighted Sum",
+	}
+	local kept = tq.statSortSelectionList
+	tq.statSortSelectionList = weights
+	local ok, out = pcall(function()
+		local order, unpriced = nil, false
+		if sort ~= "Weight" then
+			local sorted, problem = tq:SortFetchResults(key, tq.sortModes[sort] or tq.sortModes.StatValue)
+			if problem == "MissingConversionRates" then
+				unpriced = true
+				sorted = tq:SortFetchResults(key, tq.sortModes.StatValue)
+			end
+			order = sorted
+		end
+		if not order then
+			order = {}
+			for index = 1, #entries do order[index] = { index = index } end
+		end
+		local calcFunc, baseOutput = build.calcsTab:GetMiscCalculator()
+		local base = tq:ReduceOutput(baseOutput)
+		local results = array({})
+		for _, position in ipairs(order) do
+			local entry = entries[position.index]
+			local evaluated, evaluation = pcall(tq.GetResultEvaluation, tq, key, position.index)
+			local best = evaluated and evaluation and evaluation[1]
+			if entry and best then
+				local item = new("Item"):Item(entry.item_string)
+				local stats, score = itemUtil.liveStats(weights, base, best)
+				local weight = tonumber(best.weight) or 0
+				results[#results + 1] = {
+					index = position.index,
+					name = item.name,
+					rarity = opt(item.rarity),
+					raw = entry.item_string,
+					amount = tonumber(entry.amount) or 0,
+					currency = tostring(entry.currency or ""),
+					priceType = opt(entry.priceType),
+					whisper = opt(entry.whisper),
+					trader = opt(entry.trader),
+					weight = weight == weight and math.max(-1e9, math.min(1e9, weight)) or 0,
+					score = score,
+					stats = stats,
+				}
+			end
+		end
+		return { results = results, unpriced = unpriced }
+	end)
+	tq.statSortSelectionList = kept
+	if not ok then error(out, 0) end
+	return out
+end
+
+function itemUtil.liveFinish(live)
+	local row, tq = live.row, live.tq
+	local target = row.target
+	local selected = target.slotTbl.selectedJewelNodeId and build.itemsTab.sockets[target.slotTbl.selectedJewelNodeId]
+		or (not target.special and target.slot) or nil
+	local safe = tq:FilterToSafeItems(row.items or {}, selected and selected.slotName)
+	if not row.byUrl then itemUtil.liveAdjust(live, safe) end
+	tq.slotTables[row.key] = target.slotTbl
+	tq.resultTbl[row.key] = safe
+	tq.lastQueries[row.key] = row.query
+	if tq.onlyWeightedBaseOutput then tq.onlyWeightedBaseOutput[row.key] = nil end
+	local listed = itemUtil.liveList(row.key, row.sort, live.weights)
+	row.results, row.unpriced = listed.results, listed.unpriced
+end
+
+function itemUtil.liveState(live)
+	local row = live.row
+	local requests = itemUtil.liveDrain(live)
+	if row.done and not row.err and not row.results then itemUtil.liveFinish(live) end
+	return {
+		requests = requests,
+		done = row.done,
+		error = opt(row.err),
+		results = row.results or null,
+		unpriced = row.unpriced == true,
+		queryId = opt(row.queryId),
+		equipSlot = opt(row.target.slot and row.target.slot.slotName),
+	}
+end
+
+-- `query` is a generated search, which PoB may repeat with adjusted weights; `url` prices a pasted trade link as it is.
+M.trade_results_start = function(p)
+	ensureBuild()
+	p = p or {}
+	local target = itemUtil.tradeTarget(p)
+	if type(p.league) ~= "string" or p.league == "" then error("params.league is required", 0) end
+	local byUrl = type(p.url) == "string" and p.url ~= ""
+	if not byUrl and type(p.query) ~= "string" then error("params.query or params.url is required", 0) end
+	local tq = build.itemsTab.tradeQuery
+	tq.tradeQueryGenerator = itemUtil.tradeGenerator()
+	local realm = itemUtil.tradeRealm(p.realm)
+	tq.pbRealm, tq.pbLeague = realm, p.league
+	local requests = tq.tradeQueryRequests
+	requests.requestQueue.search, requests.requestQueue.fetch = {}, {}
+	requests.maxFetchPerSearch = 10 * math.max(1, math.min(10, math.floor(tonumber(p.pages) or 2)))
+	local row = { key = target.key, target = target, done = false, sort = p.sort, byUrl = byUrl }
+	local live = { tq = tq, requests = requests, weights = itemUtil.tradeWeights(p.statWeights), pending = {}, row = row }
+	itemUtil.live = live
+	local function finished(items, errMsg, query)
+		-- PoE2 hands back the query it ended on after adjusting the weights; PoE1 sends none.
+		row.done, row.err, row.items, row.query = true, errMsg and tostring(errMsg) or nil, items, query or p.query
+	end
+	local ok, err
+	if byUrl then
+		ok, err = pcall(requests.SearchWithURL, requests, p.url, finished)
+	else
+		ok, err = pcall(requests.SearchWithQueryWeightAdjusted, requests, realm, p.league, p.query, finished, { callbackQueryId = function(id) row.queryId = id end })
+	end
+	if not ok then row.done, row.err = true, byUrl and "Invalid URL" or tostring(err) end
+	return itemUtil.liveState(live)
+end
+
+M.trade_results_reply = function(p)
+	local live = itemUtil.live
+	local id = tonumber(p and p.id)
+	local request = live and id and live.pending[id]
+	if not request then error("that trade request is no longer wanted", 0) end
+	live.pending[id] = nil
+	local status = tonumber(p.status) or 0
+	local failed = status ~= 200 and ("Response code: " .. status) or nil
+	local ok, err = pcall(request.callback, type(p.body) == "string" and p.body or "", failed, unpack(request.callbackParams or {}))
+	if not ok then live.row.done, live.row.err = true, tostring(err) end
+	return itemUtil.liveState(live)
+end
+
+-- A row's listings again: in another order, with other weights, or after the build changed.
+M.trade_results = function(p)
+	ensureBuild()
+	local key = tostring(p and p.key or "")
+	local listed = itemUtil.liveList(key, p.sort, itemUtil.tradeWeights(p.statWeights))
+	return { results = listed.results, unpriced = listed.unpriced }
+end
+
+-- The search that finds one listing again, as PoB's Trader builds it for a listing with no whisper.
+M.trade_result_query = function(p)
+	ensureBuild()
+	local tq = build.itemsTab.tradeQuery
+	local key = tostring(p and p.key or "")
+	local entry = tq.resultTbl[key] and tq.resultTbl[key][tonumber(p.index) or 0]
+	local exact = entry and type(tq.lastQueries[key]) == "string" and dkjson.decode(tq.lastQueries[key])
+	if not exact or type(exact.query) ~= "table" then error("no such trade result", 0) end
+	local weighted = exact.query.stats and exact.query.stats[1]
+	if weighted and weighted.type == "weight" then
+		local weight = tonumber(entry.weight) or 0
+		weighted.value = { min = floor(weight, 1) - 1, max = round(weight, 1) + 1 }
+	end
+	exact.query.filters = exact.query.filters or {}
+	local trade = exact.query.filters.trade_filters or {}
+	trade.filters = trade.filters or {}
+	trade.filters.account = { input = entry.trader }
+	exact.query.filters.trade_filters = trade
+	return { query = dkjson.encode(exact) }
 end
 
 -- The host fetches the character from GGG's account API and PoB's ImportTab builds it.

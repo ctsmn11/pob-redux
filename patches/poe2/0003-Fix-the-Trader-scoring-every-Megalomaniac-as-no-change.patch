@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Judd <ipajudd@gmail.com>
+Date: Sun, 11 Oct 2026 17:15:00 -0700
+Subject: [PATCH] Fix the Trader scoring every Megalomaniac as no change
+
+TradeQuery:GetResultEvaluation weighs a Megalomaniac by adding its notables
+with calcFunc({ addNodes = ... }). It looks each one up in tree.notableMap
+and keeps only a node whose `recipes` field is set. The tree gives a notable
+a `recipe` field, so no node passed the check, nothing was added, and every
+Megalomaniac listing scored the same as the build without it.
+
+Check `recipe`, the field the tree sets.
+---
+ src/Classes/TradeQuery.lua | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/Classes/TradeQuery.lua b/src/Classes/TradeQuery.lua
+index bf67e9c..7b158d0 100644
+--- a/src/Classes/TradeQuery.lua
++++ b/src/Classes/TradeQuery.lua
+@@ -909,7 +909,7 @@ function TradeQueryClass:GetResultEvaluation(row_idx, result_index, calcFunc, ba
+ 		local addedNodes = {}
+ 		for nodeName in (result.item_string.."\r\n"):gmatch("Allocates (.-)\r?\n") do
+ 			local node = self.itemsTab.build.spec.tree.notableMap[nodeName:lower()]
+-			if node and node.recipes ~= nil then
++			if node and node.recipe ~= nil then
+ 				addedNodes[node] = true
+ 			end
+ 		end
+-- 
+2.55.0.windows.5
+

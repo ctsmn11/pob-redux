@@ -1326,6 +1326,7 @@ pub fn run() {
             ggg::ggg_sign_out,
             ggg::ggg_characters,
             ggg::ggg_character,
+            ggg::ggg_trade_request,
             ninja_characters,
             ninja_character_code,
             save_game_build_files,

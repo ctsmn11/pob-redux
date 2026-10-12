@@ -21,7 +21,7 @@ use crate::game::Game;
 use crate::AppState;
 
 const CLIENT_ID: &str = "pobredux";
-const SCOPES: &str = "account:profile account:characters";
+const SCOPES: &str = "account:profile account:characters account:trade";
 /// GGG registered these loopback ports for the client; no other redirect is accepted.
 const PORTS: [u16; 3] = [49095, 49096, 49097];
 const AUTHORIZE: &str = "https://www.pathofexile.com/oauth/authorize";
@@ -35,6 +35,16 @@ const SIGN_IN_WAIT: Duration = Duration::from_secs(300);
 const SIGN_IN_LIFETIME: u64 = 7 * 24 * 60 * 60;
 const SIGNED_OUT: &str = "Sign in with Path of Exile first.";
 const EXPIRED: &str = "The Path of Exile sign-in has expired. Sign in again.";
+const NEEDS_TRADE: &str = "Sign in with Path of Exile again to allow trade searches.";
+/// A trade request may only go to these addresses, so nothing else can be sent the token.
+const TRADE_API: [&str; 6] = [
+    "https://www.pathofexile.com/api/trade2/search/",
+    "https://www.pathofexile.com/api/trade2/fetch/",
+    "https://www.pathofexile.com/api/trade/search/",
+    "https://www.pathofexile.com/api/trade/fetch/",
+    "https://www.pathofexile.com/api/trade2/data/leagues",
+    "https://www.pathofexile.com/api/trade/data/leagues",
+];
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Session {
@@ -43,17 +53,29 @@ struct Session {
     refresh: Option<String>,
     expires_at: u64,
     ends_at: u64,
+    #[serde(default)]
+    scope: String,
 }
 
 impl Session {
-    fn new(tokens: TokenResponse, account: String, ends_at: u64) -> Self {
+    /// `earlier` is the session a refresh renews; without one this is a new sign-in.
+    fn new(tokens: TokenResponse, earlier: Option<Session>) -> Self {
+        let (account, scope, ends_at) = match earlier {
+            Some(session) => (session.account, session.scope, session.ends_at),
+            None => (String::new(), String::new(), now() + SIGN_IN_LIFETIME),
+        };
         Session {
             account: tokens.username.unwrap_or(account),
             access: tokens.access_token,
             refresh: tokens.refresh_token,
             expires_at: now() + tokens.expires_in,
             ends_at,
+            scope: tokens.scope.unwrap_or(scope),
         }
+    }
+
+    fn allows_trade(&self) -> bool {
+        self.scope.split_whitespace().any(|scope| scope == "account:trade")
     }
 }
 
@@ -134,6 +156,7 @@ struct TokenResponse {
     expires_in: u64,
     refresh_token: Option<String>,
     username: Option<String>,
+    scope: Option<String>,
 }
 
 enum TokenError {
@@ -171,14 +194,14 @@ async fn access_token(app: &AppHandle, state: &GggState, stale: Option<&str>) ->
     if session.expires_at > now() + 60 && stale != Some(session.access.as_str()) {
         return Ok(session.access);
     }
-    let Some(refresh) = session.refresh else {
+    let Some(refresh) = session.refresh.clone() else {
         store.clear(app);
         return Err(EXPIRED.into());
     };
     match request_token(format!("client_id={CLIENT_ID}&grant_type=refresh_token&refresh_token={}", query_value(&refresh))).await {
         Ok(tokens) => {
             let access = tokens.access_token.clone();
-            store.set(app, Session::new(tokens, session.account, session.ends_at));
+            store.set(app, Session::new(tokens, Some(session)));
             Ok(access)
         }
         Err(TokenError::Rejected(why)) => {
@@ -219,35 +242,46 @@ fn limited(seconds: u64) -> String {
     format!("pathofexile.com is limiting requests. Try again in {seconds} {unit}.")
 }
 
-async fn api_get(app: &AppHandle, state: &GggState, policy: &str, path: &str) -> Result<Value, String> {
-    if let Some(wait) = state.wait(policy) {
-        return Err(limited(wait));
-    }
+struct Reply {
+    status: u16,
+    wait: u64,
+    body: String,
+}
+
+async fn send(app: &AppHandle, state: &GggState, policy: &str, request: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder) -> Result<Reply, String> {
     let client = client()?;
     let mut token = access_token(app, state, None).await?;
     let mut renewed = false;
     loop {
-        let resp = client.get(format!("{API}{path}")).bearer_auth(&token).send().await.map_err(|e| format!("pathofexile.com: {e}"))?;
+        let resp = request(&client).bearer_auth(&token).send().await.map_err(|e| format!("pathofexile.com: {e}"))?;
         let wait = wait_from(resp.headers());
         state.limit(policy, wait);
         let status = resp.status().as_u16();
-        if status == 401 && !renewed {
-            renewed = true;
-            token = access_token(app, state, Some(&token)).await?;
-            continue;
+        if status == 401 {
+            if !renewed {
+                renewed = true;
+                token = access_token(app, state, Some(&token)).await?;
+                continue;
+            }
+            state.store(app).await.clear(app);
+            return Err(EXPIRED.into());
         }
         let body = resp.text().await.map_err(|e| format!("pathofexile.com: {e}"))?;
-        return match status {
-            200..=299 => serde_json::from_str(&body).map_err(|_| "pathofexile.com sent a reply this app could not read".to_string()),
-            401 => {
-                state.store(app).await.clear(app);
-                Err(EXPIRED.into())
-            }
-            403 => Err("pathofexile.com refused the request. Sign out, then sign in again.".into()),
-            404 => Err("pathofexile.com has no such character.".into()),
-            429 => Err(limited(wait.max(1))),
-            _ => Err(format!("pathofexile.com returned HTTP {status}")),
-        };
+        return Ok(Reply { status, wait, body });
+    }
+}
+
+async fn api_get(app: &AppHandle, state: &GggState, policy: &str, path: &str) -> Result<Value, String> {
+    if let Some(wait) = state.wait(policy) {
+        return Err(limited(wait));
+    }
+    let reply = send(app, state, policy, |client| client.get(format!("{API}{path}"))).await?;
+    match reply.status {
+        200..=299 => serde_json::from_str(&reply.body).map_err(|_| "pathofexile.com sent a reply this app could not read".to_string()),
+        403 => Err("pathofexile.com refused the request. Sign out, then sign in again.".into()),
+        404 => Err("pathofexile.com has no such character.".into()),
+        429 => Err(limited(reply.wait.max(1))),
+        status => Err(format!("pathofexile.com returned HTTP {status}")),
     }
 }
 
@@ -334,11 +368,12 @@ async fn wait_for_code(listener: TcpListener, csrf: String) -> Result<String, St
 pub struct Account {
     name: String,
     ends_at: u64,
+    trade: bool,
 }
 
 impl From<&Session> for Account {
     fn from(session: &Session) -> Self {
-        Account { name: session.account.clone(), ends_at: session.ends_at }
+        Account { name: session.account.clone(), ends_at: session.ends_at, trade: session.allows_trade() }
     }
 }
 
@@ -379,7 +414,7 @@ pub async fn ggg_sign_in(app: AppHandle, state: State<'_, GggState>) -> Result<O
         TokenError::Rejected(why) => format!("pathofexile.com refused the sign-in: {why}"),
         TokenError::Failed(e) => e,
     })?;
-    let session = Session::new(tokens, String::new(), now() + SIGN_IN_LIFETIME);
+    let session = Session::new(tokens, None);
     let account = Account::from(&session);
     state.store(&app).await.set(&app, session);
     Ok(Some(account))
@@ -431,6 +466,41 @@ pub async fn ggg_character(app: AppHandle, state: State<'_, GggState>, game: Sta
     }
 }
 
+fn trade_policy(url: &str) -> Result<&'static str, String> {
+    TRADE_API.iter().copied().find(|prefix| url.starts_with(prefix)).ok_or_else(|| "not a pathofexile.com trade request".to_string())
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TradeReply {
+    Reply { status: u16, body: String },
+    Wait { seconds: u64 },
+}
+
+/// A rate limit comes back as `Wait`, for the caller to send the same request again after it.
+#[tauri::command]
+pub async fn ggg_trade_request(app: AppHandle, state: State<'_, GggState>, url: String, body: Option<String>) -> Result<TradeReply, String> {
+    let policy = trade_policy(&url)?;
+    match &state.store(&app).await.session {
+        None => return Err(SIGNED_OUT.into()),
+        Some(session) if !session.allows_trade() => return Err(NEEDS_TRADE.into()),
+        Some(_) => {}
+    }
+    if let Some(seconds) = state.wait(policy) {
+        return Ok(TradeReply::Wait { seconds });
+    }
+    let reply = send(&app, &state, policy, |client| match &body {
+        Some(json) => client.post(&url).header("content-type", "application/json").body(json.clone()),
+        None => client.get(&url),
+    })
+    .await?;
+    match reply.status {
+        403 => Err(NEEDS_TRADE.into()),
+        429 => Ok(TradeReply::Wait { seconds: reply.wait.max(1) }),
+        status => Ok(TradeReply::Reply { status, body: reply.body }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,6 +528,24 @@ mod tests {
         assert_eq!(callback("/favicon.ico", "s1"), None);
         let denied = callback("/callback?error=access_denied&error_description=The+user+said+no&state=s1", "s1");
         assert_eq!(denied, Some(Err("pathofexile.com did not sign you in: The user said no".into())));
+    }
+
+    #[test]
+    fn trade_requests_stay_on_the_trade_api() {
+        assert!(trade_policy("https://www.pathofexile.com/api/trade2/search/poe2/Standard").is_ok());
+        assert!(trade_policy("https://www.pathofexile.com/api/trade/fetch/a,b?query=q").is_ok());
+        assert!(trade_policy("https://www.pathofexile.com/api/trade2/data/static").is_err());
+        assert!(trade_policy("https://www.pathofexile.com/api/trade2/data/leagues").is_ok());
+        assert!(trade_policy("https://www.pathofexile.com.example.com/api/trade2/search/x").is_err());
+        assert!(trade_policy("https://api.pathofexile.com/character").is_err());
+    }
+
+    #[test]
+    fn trade_needs_its_scope() {
+        let session = |scope: &str| Session { account: String::new(), access: String::new(), refresh: None, expires_at: 0, ends_at: 0, scope: scope.into() };
+        assert!(session("account:profile account:characters account:trade").allows_trade());
+        assert!(!session("account:profile account:characters").allows_trade());
+        assert!(!session("").allows_trade());
     }
 
     #[test]
