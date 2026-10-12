@@ -5,6 +5,7 @@ use mlua::serde::{DeserializeOptions, SerializeOptions};
 use mlua::{Function, Lua, LuaOptions, LuaSerdeExt, StdLib, Table, Value as LuaValue};
 use serde_json::Value;
 
+use crate::cache::{self, LuaCache};
 use crate::native;
 use crate::{Error, Result};
 
@@ -20,6 +21,8 @@ pub struct EngineConfig {
     /// `Settings.xml` under it. Pointing it at the user's Documents folder makes
     /// builds interoperate with an installed Path of Building.
     pub user_dir: PathBuf,
+    /// Where compiled Lua is kept between runs. `None` compiles every source on every boot.
+    pub cache_dir: Option<PathBuf>,
 }
 
 /// A booted PoB instance. Not `Send`: keep it on one thread (see [`crate::EngineHandle`]).
@@ -64,7 +67,12 @@ impl Engine {
         let user_dir = cfg.user_dir.canonicalize().unwrap_or_else(|_| cfg.user_dir.clone());
         globals.set("__pob_root", slash(&pob_root))?;
         globals.set("__user_dir", slash(&user_dir))?;
-        globals.set("__native", native::build_table(&lua, t0)?)?;
+        let native = native::build_table(&lua, t0)?;
+        if let Some(dir) = &cfg.cache_dir {
+            let runtime: String = lua.load("return jit.version .. ' ' .. jit.arch").eval()?;
+            native.set("cache", cache::table(&lua, LuaCache::open(dir, &slash(&pob_root), &runtime))?)?;
+        }
+        globals.set("__native", native)?;
 
         lua.load(HOST_LUA).set_name("host.lua").exec()?;
         let boot: Function = globals.get("__pob_boot")?;

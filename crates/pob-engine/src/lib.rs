@@ -8,6 +8,7 @@
 //! Everything PoB computes is therefore computed by PoB itself; this crate only
 //! marshals data in and out.
 
+mod cache;
 mod engine;
 mod native;
 pub mod pool;

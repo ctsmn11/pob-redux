@@ -9,6 +9,7 @@
 -- Rust sets `__pob_root`, `__user_dir` and `__native` before running this.
 
 local root, userDir, native = __pob_root, __user_dir, __native
+local cache = native.cache
 
 local function isAbsolute(p)
 	local c = p:sub(1, 1)
@@ -83,9 +84,22 @@ do
 		return ok, err
 	end
 	os.rename = function(a, b) return os_rename(resolve(a), resolve(b)) end
+	local l_loadstring, dump = loadstring, string.dump
+	local function compile(abs, ...)
+		if not cache or not underRoot(abs) or select("#", ...) > 0 then
+			return l_loadfile(abs, ...)
+		end
+		local code = cache.lookup(abs)
+		local f = code and l_loadstring(code)
+		if f then return f end
+		local err
+		f, err = l_loadfile(abs)
+		if f then cache.store(abs, dump(f)) end
+		return f, err
+	end
 	loadfile = function(p, ...)
 		local abs = resolve(p)
-		local f, err = l_loadfile(abs, ...)
+		local f, err = compile(abs, ...)
 		if f == nil and underRoot(abs) then
 			local cf = l_loadfile(cachePath(abs), ...)
 			if cf then return cf end
@@ -102,6 +116,18 @@ do
 		root .. "/lua/?.lua", root .. "/lua/?/init.lua",
 	}, ";")
 	package.cpath = ""
+	-- require compiles through C; this loader sends PoB's modules through the cache.
+	if cache then
+		table.insert(package.loaders, 2, function(name)
+			local path = package.searchpath(name, package.path)
+			if not path then return end
+			local f, err = loadfile(path)
+			if not f then
+				error(("error loading module '%s' from file '%s':\n\t%s"):format(name, path, err), 0)
+			end
+			return f
+		end)
+	end
 end
 
 -- Native modules shipped with the SimpleGraphic runtime. Network and profiling
@@ -317,6 +343,71 @@ function IsSubScriptRunning() return false end
 -- ---------------------------------------------------------------------------
 -- Module loading
 -- ---------------------------------------------------------------------------
+-- Data/ModCache.lua lacks some lines every boot parses (rune mods, mastery effects), so their parses are kept between runs.
+local bootMods
+local function withBootMods(base)
+	bootMods = { base = base, sources = cache.fingerprint(), lines = { } }
+	local code = cache.read("mods.lua")
+	local f = code and loadstring(code, "=mods")
+	if f then
+		local ok, sources, lines = pcall(f)
+		if ok and sources == bootMods.sources then
+			bootMods.lines = lines
+			for line, entry in pairs(lines) do
+				if entry then base[line] = entry end
+			end
+		end
+	end
+	return base
+end
+local function serialise(v, out, depth)
+	local t = type(v)
+	if t == "table" and depth < 16 then
+		out[#out + 1] = "{"
+		for k, x in pairs(v) do
+			out[#out + 1] = "["
+			serialise(k, out, depth + 1)
+			out[#out + 1] = "]="
+			serialise(x, out, depth + 1)
+			out[#out + 1] = ","
+		end
+		out[#out + 1] = "}"
+	elseif t == "string" then
+		out[#out + 1] = ("%q"):format(v)
+	elseif t == "number" and v == v and v ~= math.huge and v ~= -math.huge then
+		out[#out + 1] = ("%.17g"):format(v)
+	elseif t == "boolean" then
+		out[#out + 1] = tostring(v)
+	else
+		error("not plain data")
+	end
+end
+local function saveBootMods()
+	local st = bootMods
+	bootMods = nil
+	if not st or not modLib or not modLib.parseModCache then return end
+	local base, lines, found = st.base, st.lines, false
+	for line, entry in pairs(modLib.parseModCache) do
+		if base[line] == nil and lines[line] == nil then
+			lines[line] = entry
+			found = true
+		end
+	end
+	if not found then return end
+	local out, count = { "local c={}\n(function()\n" }, 0
+	for line, entry in pairs(lines) do
+		local part = { }
+		-- A parse that holds a function cannot be written; false stops it counting as new next boot.
+		local text = entry and pcall(serialise, entry, part, 0) and table.concat(part) or "false"
+		count = count + 1
+		-- LuaJIT limits the constants in one function.
+		if count % 500 == 0 then out[#out + 1] = "end)()\n(function()\n" end
+		out[#out + 1] = ("c[%q]=%s\n"):format(line, text)
+	end
+	out[#out + 1] = ("end)()\nreturn %q,c\n"):format(st.sources)
+	cache.write("mods.lua", table.concat(out))
+end
+
 function LoadModule(name, ...)
 	if not name:match("%.lua$") then
 		name = name .. ".lua"
@@ -324,6 +415,9 @@ function LoadModule(name, ...)
 	local func, err = loadfile(name)
 	if not func then
 		error("LoadModule() error loading '" .. name .. "': " .. tostring(err))
+	end
+	if cache and name == "Data/ModCache.lua" then
+		return withBootMods(func(...))
 	end
 	return func(...)
 end
@@ -402,5 +496,10 @@ function __pob_boot()
 	runCallback("OnFrame")
 	if launch.promptMsg then
 		error("PoB startup failed: " .. tostring(launch.promptMsg), 0)
+	end
+	if cache then
+		saveBootMods()
+		cache.finish()
+		cache = nil
 	end
 end

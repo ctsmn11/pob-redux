@@ -65,9 +65,13 @@ fn session_marker(app: &tauri::AppHandle) -> Option<PathBuf> {
     app.path().app_data_dir().ok().map(|d| d.join("session.lock"))
 }
 
+fn safe_mode() -> bool {
+    std::env::args().any(|a| a == "--safe-mode") || std::env::var_os("POB_REDUX_SAFE_MODE").is_some()
+}
+
 /// A leftover marker means a crash, unless another instance runs or another version (an update) wrote it.
 fn begin_session(app: &tauri::AppHandle) -> SessionInfo {
-    let safe_mode = std::env::args().any(|a| a == "--safe-mode") || std::env::var_os("POB_REDUX_SAFE_MODE").is_some();
+    let safe_mode = safe_mode();
     let Some(marker) = session_marker(app) else {
         return SessionInfo { unclean_exit: false, safe_mode };
     };
@@ -1047,7 +1051,9 @@ fn boot_runtime(app: &tauri::AppHandle, game: Game, user_dir: &Path) -> Runtime 
         PathBuf::from("resources").join(game.resource_dir())
     });
     log::info!("pob root: {}", pob_root.display());
-    let cfg = EngineConfig { pob_root: pob_root.clone(), user_dir: user_dir.to_path_buf() };
+    // Safe mode compiles PoB from source, so a bad cache cannot keep the app from starting.
+    let cache_dir = if safe_mode() { None } else { app.path().app_cache_dir().ok().map(|d| d.join("engine")) };
+    let cfg = EngineConfig { pob_root: pob_root.clone(), user_dir: user_dir.to_path_buf(), cache_dir };
     let engine = EngineHandle::spawn(cfg.clone());
     // Workers boot on the first scan and are released again once the pool
     // goes idle. Warming them here cost every session ~240 MB per worker for

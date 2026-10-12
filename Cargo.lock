@@ -3685,6 +3685,7 @@ name = "pob-engine"
 version = "0.4.37"
 dependencies = [
  "clap",
+ "crc32fast",
  "env_logger",
  "flate2",
  "glob",
