@@ -673,6 +673,12 @@ M.gc = function()
 	return M.mem()
 end
 
+-- The engine thread calls this while no request is waiting; true asks for another call. `hold` only takes the work off the frames.
+M.idle_step = function(p)
+	if p and p.hold then return itemUtil.holdItemDb() end
+	return itemUtil.stepItemDb()
+end
+
 M.version = function()
 	return {
 		game = GAME,
@@ -4312,17 +4318,67 @@ end
 -- Item database, tooltips, editing, weapon sets
 -- ---------------------------------------------------------------------------
 
--- The unique/rare DBs parse on a coroutine that PoB resumes once per frame;
--- pump frames until they finish (one-time cost on first use).
+-- PoB parses the unique/rare DBs a slice per frame; holding the loader here stops frames paying for it.
+function itemUtil.holdItemDb()
+	itemUtil.loader = itemUtil.loader or main.onFrameFuncs.LoadItems
+	main.onFrameFuncs.LoadItems = nil
+	return itemUtil.loader ~= nil
+end
+
+function itemUtil.stepItemDb()
+	if not itemUtil.holdItemDb() then return false end
+	local ok, err = pcall(itemUtil.loader)
+	if ok and (main.uniqueDB.loading or main.rareDB.loading) then return true end
+	itemUtil.loader = nil
+	if not ok then native.log("warn", "item database: " .. tostring(err)) end
+	return false
+end
+
 function itemUtil.ensureItemDb()
-	local guard = 0
-	while (main.uniqueDB.loading or main.rareDB.loading) and guard < 2000 do
-		frame()
-		guard = guard + 1
-	end
+	while itemUtil.stepItemDb() do end
 	if main.uniqueDB.loading or main.rareDB.loading then
 		error("item databases are still loading", 0)
 	end
+end
+
+-- PoB reads a unique's natural level from the DB as it parses one; until the DB loads, the entry asked for is built the way Main.lua's loader builds it.
+if IS_POE2 then
+	local rawsByTitle, busy
+	setmetatable(main.uniqueDB.list, { __index = function(list, name)
+		if busy or not main.uniqueDB.loading or type(name) ~= "string" then return nil end
+		-- PoB's own loader runs on a coroutine and must find nothing here, as it would without this.
+		local co, isMain = coroutine.running()
+		if co and not isMain then return nil end
+		if not rawsByTitle then
+			rawsByTitle = {}
+			for _, typeList in pairs(data.uniques) do
+				for _, raw in pairs(typeList) do
+					local title = type(raw) == "string" and raw:match("^%s*([^\r\n]+)")
+					if title then
+						rawsByTitle[title] = rawsByTitle[title] or {}
+						table.insert(rawsByTitle[title], raw)
+					end
+				end
+			end
+		end
+		local title = name:match("^(.*), ") or name
+		local raws = rawsByTitle[title]
+		if not raws then return nil end
+		rawsByTitle[title] = nil
+		busy = true
+		local ok, err = pcall(function()
+			for _, raw in ipairs(raws) do
+				local item = new("Item"):Item(raw, "UNIQUE", true)
+				if item.base then
+					itemLib.addRuneforgingBaseVariants(item)
+					rawset(list, item.name, item)
+				end
+			end
+		end)
+		busy = false
+		if not ok then native.log("warn", "item database: " .. tostring(err)) end
+		return rawget(list, name)
+	end })
 end
 
 function itemUtil.dbFor(name)
@@ -6893,15 +6949,8 @@ M.import_game_build = function(p)
 		local lo, hi = interval(entry)
 		return lo <= targetLevel and targetLevel <= hi
 	end
-	-- finish the unique-DB parse up front; gear import reads it, and pumping
-	-- frames mid-import stalls the loader coroutine
-	do
-		local guard = 0
-		while (main.uniqueDB.loading or main.rareDB.loading) and guard < 20000 do
-			frame()
-			guard = guard + 1
-		end
-	end
+	-- finish the unique-DB parse up front; gear import reads it
+	while itemUtil.stepItemDb() do end
 	M.new_build({ name = (p.name and p.name ~= "" and p.name) or dat.name or "Imported build" })
 	local spec = build.spec
 	local byString = {}

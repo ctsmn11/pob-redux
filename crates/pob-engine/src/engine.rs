@@ -125,6 +125,16 @@ impl Engine {
         Ok(out)
     }
 
+    /// Takes the bridge's background work off PoB's frames, to be done by `idle_step`. True when there is any.
+    pub fn hold_idle_work(&self) -> bool {
+        matches!(self.call("idle_step", &serde_json::json!({ "hold": true })), Ok(Value::Bool(true)))
+    }
+
+    /// One step of the bridge's background work. True while more remains.
+    pub fn idle_step(&self) -> bool {
+        matches!(self.call("idle_step", &Value::Null), Ok(Value::Bool(true)))
+    }
+
     /// Run a raw Lua chunk. Debug/REPL use only.
     pub fn eval(&self, code: &str) -> Result<Value> {
         let ret: LuaValue = self.lua.load(code).eval()?;

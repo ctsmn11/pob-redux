@@ -2,10 +2,10 @@
 //! and a full recalculation can take tens of milliseconds, so callers talk to
 //! it through a channel and the UI thread never blocks on Lua.
 
-use std::sync::mpsc::{sync_channel, Receiver, Sender, SyncSender};
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -57,9 +57,21 @@ pub struct EngineHandle {
     _thread: Arc<Option<JoinHandle<()>>>,
 }
 
+/// The queue must stay empty this long before background work runs, so it never sits between the calls of one burst.
+const IDLE_AFTER: Duration = Duration::from_millis(200);
+
 impl EngineHandle {
     /// Spawns the engine thread and starts booting PoB immediately.
     pub fn spawn(cfg: EngineConfig) -> Self {
+        Self::start(cfg, false)
+    }
+
+    /// As `spawn`, and the thread runs the bridge's background work (the item database parse) while no call is waiting.
+    pub fn spawn_with_idle_work(cfg: EngineConfig) -> Self {
+        Self::start(cfg, true)
+    }
+
+    fn start(cfg: EngineConfig, idle_work: bool) -> Self {
         let (tx, rx) = mpsc::channel::<Job>();
         let status = Arc::new(Mutex::new(EngineStatus {
             state: EngineState::Booting,
@@ -73,7 +85,7 @@ impl EngineHandle {
             .name("pob-engine".into())
             // PoB's mod parser and calc code recurse deeply; give Lua headroom.
             .stack_size(64 * 1024 * 1024)
-            .spawn(move || run(cfg, rx, status2))
+            .spawn(move || run(cfg, rx, status2, idle_work))
             .expect("spawn pob-engine thread");
         Self { tx, status, _thread: Arc::new(Some(thread)) }
     }
@@ -121,7 +133,31 @@ impl EngineHandle {
     }
 }
 
-fn run(cfg: EngineConfig, rx: Receiver<Job>, status: Arc<Mutex<EngineStatus>>) {
+enum Next {
+    Job(Job),
+    Idle,
+    Closed,
+}
+
+fn next(rx: &Receiver<Job>, work_left: bool, quiet: bool) -> Next {
+    if !work_left {
+        return rx.recv().map_or(Next::Closed, Next::Job);
+    }
+    if quiet {
+        return match rx.try_recv() {
+            Ok(job) => Next::Job(job),
+            Err(TryRecvError::Empty) => Next::Idle,
+            Err(TryRecvError::Disconnected) => Next::Closed,
+        };
+    }
+    match rx.recv_timeout(IDLE_AFTER) {
+        Ok(job) => Next::Job(job),
+        Err(RecvTimeoutError::Timeout) => Next::Idle,
+        Err(RecvTimeoutError::Disconnected) => Next::Closed,
+    }
+}
+
+fn run(cfg: EngineConfig, rx: Receiver<Job>, status: Arc<Mutex<EngineStatus>>, idle_work: bool) {
     let engine = match Engine::boot(cfg) {
         Ok(e) => {
             let mut st = status.lock().unwrap();
@@ -153,7 +189,25 @@ fn run(cfg: EngineConfig, rx: Receiver<Job>, status: Arc<Mutex<EngineStatus>>) {
         }
     };
 
-    for job in rx {
+    let mut work_left = idle_work && engine.hold_idle_work();
+    let mut quiet = false;
+    let mut spent = Duration::ZERO;
+    loop {
+        let job = match next(&rx, work_left, quiet) {
+            Next::Job(job) => job,
+            Next::Idle => {
+                quiet = true;
+                let t0 = Instant::now();
+                work_left = engine.idle_step();
+                spent += t0.elapsed();
+                if !work_left {
+                    log::info!("pob-engine finished its background work in {} ms", spent.as_millis());
+                }
+                continue;
+            }
+            Next::Closed => break,
+        };
+        quiet = false;
         match job {
             Job::Call { method, params, reply } => {
                 let t0 = Instant::now();

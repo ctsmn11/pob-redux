@@ -493,7 +493,12 @@ function __pob_boot()
 	fixCopyTableSafe()
 	-- Settings.xml may queue "reopen the last build"; the app manages builds itself.
 	launch.main:SetMode("BUILD", false, "Unnamed build")
+	-- PoB parses the item database a slice per frame; boot leaves every slice for later.
+	local frameFuncs = launch.main.onFrameFuncs
+	local loadItems = frameFuncs.LoadItems
+	frameFuncs.LoadItems = nil
 	runCallback("OnFrame")
+	frameFuncs.LoadItems = loadItems
 	if launch.promptMsg then
 		error("PoB startup failed: " .. tostring(launch.promptMsg), 0)
 	end

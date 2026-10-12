@@ -1054,7 +1054,7 @@ fn boot_runtime(app: &tauri::AppHandle, game: Game, user_dir: &Path) -> Runtime 
     // Safe mode compiles PoB from source, so a bad cache cannot keep the app from starting.
     let cache_dir = if safe_mode() { None } else { app.path().app_cache_dir().ok().map(|d| d.join("engine")) };
     let cfg = EngineConfig { pob_root: pob_root.clone(), user_dir: user_dir.to_path_buf(), cache_dir };
-    let engine = EngineHandle::spawn(cfg.clone());
+    let engine = EngineHandle::spawn_with_idle_work(cfg.clone());
     // Workers boot on the first scan and are released again once the pool
     // goes idle. Warming them here cost every session ~240 MB per worker for
     // a feature most sessions never reach.
