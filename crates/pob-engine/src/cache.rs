@@ -313,6 +313,9 @@ mod tests {
         assert!(!cache.changed);
 
         std::fs::write(&source, "return 2").unwrap();
+        // Linux file times tick every few ms, so a rewrite this quick can keep the old mtime.
+        let later = SystemTime::now() + Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&source).unwrap().set_modified(later).unwrap();
         let mut cache = open(&dir, "test");
         assert!(cache.lookup(&abs).is_none());
         assert_ne!(cache.fingerprint, fingerprint);
