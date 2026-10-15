@@ -575,6 +575,76 @@
     tip = null;
   }
 
+  type Column = "slots" | "list";
+  const COLUMNS_KEY = "pob-redux:items-columns";
+  const SLOTS_WIDTH = 380;
+  const MIN_SLOTS = 280;
+  const MIN_LIST = 220;
+  let colsWidth = $state(0);
+  let slotsCol = $state<HTMLElement>();
+  let listCol = $state<HTMLElement>();
+  let slotsWidth = $state(SLOTS_WIDTH);
+  let listShare = $state(0.5);
+  let resizing = $state<Column | null>(null);
+  try {
+    const saved = JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? "{}");
+    if (Number.isFinite(saved.slots)) slotsWidth = saved.slots;
+    if (Number.isFinite(saved.list)) listShare = saved.list;
+  } catch {}
+
+  function saveColumns() {
+    try {
+      localStorage.setItem(COLUMNS_KEY, JSON.stringify({ slots: slotsWidth, list: listShare }));
+    } catch {}
+  }
+
+  function resizeColumn(column: Column, px: number) {
+    if (column === "slots") {
+      slotsWidth = Math.round(Math.max(MIN_SLOTS, Math.min(px, colsWidth - 2 * MIN_LIST)));
+      return;
+    }
+    const rest = colsWidth - (slotsCol?.offsetWidth ?? 0);
+    if (rest > 2 * MIN_LIST) listShare = Math.max(MIN_LIST, Math.min(px, rest - MIN_LIST)) / rest;
+  }
+
+  function dragColumn(e: PointerEvent, column: Column) {
+    const grip = e.currentTarget as HTMLElement;
+    const start = (column === "slots" ? slotsCol : listCol)?.getBoundingClientRect().left ?? 0;
+    grip.setPointerCapture(e.pointerId);
+    resizing = column;
+    const move = (ev: PointerEvent) => resizeColumn(column, ev.clientX - start);
+    const end = () => {
+      resizing = null;
+      saveColumns();
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", end);
+      grip.removeEventListener("pointercancel", end);
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", end);
+    grip.addEventListener("pointercancel", end);
+  }
+
+  function nudgeColumn(e: KeyboardEvent, column: Column) {
+    const dir = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+    if (!dir) return;
+    e.preventDefault();
+    const width = (column === "slots" ? slotsCol : listCol)?.offsetWidth ?? 0;
+    resizeColumn(column, width + dir * (e.shiftKey ? 40 : 12));
+    saveColumns();
+  }
+
+  function resetColumn(column: Column) {
+    if (column === "slots") slotsWidth = SLOTS_WIDTH;
+    else listShare = 0.5;
+    saveColumns();
+  }
+
+  const columnPercent = $derived({
+    slots: colsWidth ? Math.round((Math.min(slotsWidth, colsWidth * 0.6) / colsWidth) * 100) : 0,
+    list: Math.round(listShare * 100),
+  });
+
   async function openEdit(itemId: number | null) {
     if (itemId == null && previewCommitting) return;
     editError = null;
@@ -667,6 +737,23 @@
   </div>
 {/snippet}
 
+{#snippet grip(column: Column)}
+  <div
+    class="grip"
+    class:dragging={resizing === column}
+    role="slider"
+    aria-label={column === "slots" ? m.items_resize_equipment() : m.items_resize_lists()}
+    aria-valuenow={columnPercent[column]}
+    aria-valuemin={0}
+    aria-valuemax={100}
+    tabindex="0"
+    title={m.items_resize_title()}
+    onpointerdown={(e) => dragColumn(e, column)}
+    onkeydown={(e) => nudgeColumn(e, column)}
+    ondblclick={() => resetColumn(column)}
+  ></div>
+{/snippet}
+
 <div class="page">
   <div class="toolbar">
     <select class="select setsel" value={activeSet?.id ?? 1} onchange={(e) => build.run(() => engine.selectItemSet(Number((e.target as HTMLSelectElement).value)))} disabled={build.busy > 0} title={m.items_set_title()}>
@@ -696,8 +783,14 @@
 
   {#if previewError}<div class="err small pad" role="alert">{previewError}</div>{/if}
 
-  <div class="cols">
-    <section class="col slots">
+  <div
+    class="cols"
+    class:resizing={resizing != null}
+    bind:clientWidth={colsWidth}
+    style:grid-template-columns={`min(${slotsWidth}px, 60%) minmax(0, ${listShare}fr) minmax(0, ${1 - listShare}fr)`}
+  >
+    <section class="col slots" bind:this={slotsCol}>
+      {@render grip("slots")}
       <div class="panel-head"><span class="label">{m.items_equipment()}</span></div>
       <div class="scroll">
         <EquipmentGrid slots={slotsResp?.slots ?? []} {items} game={game.current} groups={build.skills?.socketGroups ?? []} {selectedItem}
@@ -721,7 +814,8 @@
       </div>
     </section>
 
-    <section class="col">
+    <section class="col" bind:this={listCol}>
+      {@render grip("list")}
       <div class="panel-head"><span class="label">{m.items_in_build()}</span><span class="dim num">{items.length}</span></div>
       <div class="scroll">
         {#each items as it (it.id)}
@@ -1062,14 +1156,40 @@
   .cols {
     flex: 1;
     display: grid;
-    grid-template-columns: 340px minmax(0, 1fr) minmax(0, 1fr);
     min-height: 0;
   }
+  .cols.resizing {
+    cursor: col-resize;
+    user-select: none;
+  }
   .col {
+    position: relative;
     display: flex;
     flex-direction: column;
+    min-width: 0;
     min-height: 0;
     border-right: 1px solid var(--line-0);
+  }
+  .grip {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: -3px;
+    width: 7px;
+    z-index: 2;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .grip:hover::after,
+  .grip:focus-visible::after,
+  .grip.dragging::after {
+    content: "";
+    position: absolute;
+    inset: 0 3px;
+    background: var(--focus);
+  }
+  .grip:focus-visible {
+    outline: none;
   }
   .col:last-child {
     border-right: 0;
