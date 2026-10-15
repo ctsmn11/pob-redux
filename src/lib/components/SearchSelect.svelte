@@ -1,13 +1,14 @@
 <script lang="ts">
-  import { tick, type Snippet } from "svelte";
+  import { tick, untrack, type Snippet } from "svelte";
   import { m } from "$lib/paraglide/messages";
 
-  let { value, options, label, disabled = false, onchange, aside }: {
+  let { value, options, label, disabled = false, onchange, onhover, aside }: {
     value: string;
-    options: { value: string; label: string }[];
+    options: { value: string; label: string; color?: string }[];
     label: string;
     disabled?: boolean;
     onchange: (value: string) => void;
+    onhover?: (value: string | null, anchor: HTMLElement | null) => void;
     aside?: Snippet<[string]>;
   } = $props();
 
@@ -81,6 +82,20 @@
   function outside(e: PointerEvent) {
     if (open && !pop?.contains(e.target as Node) && !trigger?.contains(e.target as Node)) close();
   }
+
+  let hovering = false;
+  function hover(i: number | null) {
+    const o = i == null ? undefined : shown[i];
+    if (!o && !hovering) return;
+    hovering = !!o;
+    onhover?.(o?.value ?? null, o ? document.getElementById(`${listId}-${i}`) : null);
+  }
+
+  $effect(() => {
+    const i = active;
+    const o = open ? shown[i] : undefined;
+    untrack(() => hover(o ? i : null));
+  });
 </script>
 
 <svelte:window onpointerdown={outside} onresize={() => close()} />
@@ -94,6 +109,7 @@
   aria-haspopup="listbox"
   aria-expanded={open}
   title={current?.label}
+  style:color={current?.color}
   {disabled}
   onclick={() => (open ? close() : show())}
   onkeydown={onTriggerKey}
@@ -133,6 +149,8 @@
             class:hot={i === active}
             class:on={o.value === value}
             tabindex="-1"
+            style:color={o.color}
+            onpointerenter={() => hover(i)}
             onpointermove={() => (active = i)}
             onclick={() => pick(o)}>{o.label}</button
           >

@@ -468,10 +468,22 @@
     });
   });
 
-  function equipSlot(slot: string, e: Event) {
+  function equipSlot(slot: string, id: number) {
     if (itemBusy) return;
-    const id = Number((e.target as HTMLSelectElement).value);
     build.run(() => engine.equipItem(slot, id));
+  }
+
+  function slotTip(e: MouseEvent | FocusEvent | HTMLElement, slot: string, itemId: number) {
+    showTip(e, `s${slot}:${itemId}`, () => engine.itemTooltip({ itemId, slotName: slot }));
+  }
+
+  function slotOptions(slot: string) {
+    return [
+      { value: "0", label: "—" },
+      ...items
+        .filter((it) => it.compatibleSlots.includes(slot))
+        .map((it) => ({ value: String(it.id), label: it.name, color: rarityColor[it.rarity ?? ""] })),
+    ];
   }
 
   function setSlotActive(slot: string, active: boolean) {
@@ -530,11 +542,11 @@
   // Beside the hovered row rather than under the pointer, so the row's own
   // buttons and the rows below stay visible.
   let tipRequest = 0;
-  function showTip(e: MouseEvent | FocusEvent, key: string, fetch: () => Promise<Tooltip>) {
+  function showTip(e: MouseEvent | FocusEvent | HTMLElement, key: string, fetch: () => Promise<Tooltip>) {
     clearTimeout(tipTimer);
     const request = ++tipRequest;
     tip = null;
-    const row = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect();
+    const row = (e instanceof HTMLElement ? e : (e.currentTarget as HTMLElement | null))?.getBoundingClientRect();
     let x = Math.min(("clientX" in e ? e.clientX : 8) + 16, window.innerWidth - 560);
     let y = Math.min(("clientY" in e ? e.clientY : 8) + 12, Math.max(window.innerHeight - 520, 40));
     if (row) {
@@ -622,7 +634,7 @@
     class="slot"
     class:jewel={s.nodeId != null}
     role="note"
-    onmouseenter={(e) => s.itemId !== 0 && showTip(e, `i${s.itemId}`, () => engine.itemTooltip({ itemId: s.itemId }))}
+    onmouseenter={(e) => s.itemId !== 0 && slotTip(e, s.slot, s.itemId)}
     onmouseleave={hideTip}
   >
     {#if s.active != null}
@@ -633,12 +645,16 @@
     {:else}
       <span class="sname">{s.label ?? s.slot}</span>
     {/if}
-    <select class="select" class:off={s.active === false && s.itemId !== 0} value={s.itemId} onchange={(e) => equipSlot(s.slot, e)} disabled={itemBusy} style:color={rarityColor[s.itemRarity ?? ""] ?? undefined}>
-      <option value={0}>—</option>
-      {#each items.filter((it) => it.compatibleSlots.includes(s.slot)) as it}
-        <option value={it.id} style:color={rarityColor[it.rarity ?? ""] ?? undefined}>{it.name}</option>
-      {/each}
-    </select>
+    <span class="pick" class:off={s.active === false && s.itemId !== 0}>
+      <SearchSelect
+        value={String(s.itemId)}
+        options={slotOptions(s.slot)}
+        label={s.label ?? s.slot}
+        disabled={itemBusy}
+        onchange={(id) => equipSlot(s.slot, Number(id))}
+        onhover={(id, anchor) => (anchor && Number(id) ? slotTip(anchor, s.slot, Number(id)) : hideTip())}
+      />
+    </span>
     <button
       class="btn sm ghost find"
       disabled={s.itemId === 0}
@@ -1070,9 +1086,17 @@
     padding: 3px 10px;
     border-bottom: 1px solid var(--line-0);
   }
-  .slot .select {
+  .pick {
+    min-width: 0;
+  }
+  .pick :global(.trigger) {
     height: 24px;
-    font-size: var(--fs-xs);
+  }
+  .pick :global(.trigger:disabled) {
+    opacity: var(--fade-off);
+  }
+  .pick.off :global(.trigger) {
+    opacity: 0.5;
   }
   .find {
     width: 24px;
@@ -1102,9 +1126,6 @@
   .sname.act input {
     flex-shrink: 0;
     margin: 0;
-  }
-  .slot .select.off {
-    opacity: 0.5;
   }
   .item {
     display: grid;
