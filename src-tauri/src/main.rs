@@ -63,13 +63,15 @@ fn preload_host_wayland() {
 }
 
 fn main() {
-    // WebKitGTK's DMA-BUF path fails on a bundled WebKit whose Mesa disagrees
-    // with the host's (a black window on Fedora and openSUSE AppImages).
-    // POB_REDUX_GPU=1 opts back in.
     #[cfg(target_os = "linux")]
     {
         preload_host_wayland();
-        if std::env::var_os("POB_REDUX_GPU").is_none() && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        // WebKitGTK's DMA-BUF path paints a black window from the AppImage's bundled WebKit and on NVIDIA's driver.
+        let dmabuf_breaks = std::env::var_os("APPIMAGE").is_some() || std::path::Path::new("/sys/module/nvidia").exists();
+        if dmabuf_breaks
+            && std::env::var_os("POB_REDUX_GPU").is_none()
+            && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+        {
             std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
         }
     }

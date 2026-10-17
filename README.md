@@ -117,9 +117,13 @@ On macOS 15 or later, open System Settings → Privacy & Security and click **Op
 
 ### The window is black on Linux
 
-The app starts with WebKit's DMA-BUF renderer turned off, because it showed a black window on some
-Mesa drivers. Setting `POB_REDUX_GPU=1` turns it back on, so start the app without that variable. If
-the window is still black, [open an issue](../../issues) with your distribution and graphics card.
+The AppImage, and any install on NVIDIA's own driver, start with WebKit's DMA-BUF renderer turned off,
+because it showed a black window there. Other installs draw with the GPU. If your window is black,
+start the app with `WEBKIT_DISABLE_DMABUF_RENDERER=1`, and without `POB_REDUX_GPU=1`. If the window is
+still black, [open an issue](../../issues) with your distribution and graphics card.
+
+`POB_REDUX_GPU=1` turns the GPU renderer back on where the app turned it off. Tree zooming is sharper
+with it, but it can show a black window.
 
 ### An API key will not save on Linux
 
