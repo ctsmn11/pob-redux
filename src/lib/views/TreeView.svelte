@@ -812,9 +812,9 @@
     }
     const keep = (ring.i1 - ring.i0 + 1) * (ring.j1 - ring.j0 + 1) + 12;
     if (T.tiles.size > keep) {
-      const mi = (ring.i0 + ring.i1) / 2;
-      const mj = (ring.j0 + ring.j1) / 2;
-      const far = [...T.tiles.entries()].sort(([, a], [, b]) => Math.hypot(b.i - mi, b.j - mj) - Math.hypot(a.i - mi, a.j - mj));
+      // From the ring's edge: by distance from its centre, a wide ring evicts its own corners and redraws them every frame.
+      const beyond = (t: Tile) => Math.hypot(Math.max(ring.i0 - t.i, 0, t.i - ring.i1), Math.max(ring.j0 - t.j, 0, t.j - ring.j1));
+      const far = [...T.tiles.entries()].sort(([, a], [, b]) => beyond(b) - beyond(a));
       for (const [k, t] of far.slice(0, T.tiles.size - keep)) {
         T.tiles.delete(k);
         if (spare.length < 64) spare.push({ below: t.below, nodes: t.nodes });
