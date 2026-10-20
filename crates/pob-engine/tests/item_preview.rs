@@ -1419,3 +1419,107 @@ fn paste_defaults_match_legacy() {
     drop(engine);
     std::fs::remove_dir_all(user_dir).unwrap();
 }
+
+#[test]
+fn implicit_additions_follow_pob_add_implicit() {
+    let root = std::env::var_os("POB_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/resources/pob")
+        });
+    if !root.join("Launch.lua").is_file() {
+        return;
+    }
+    let user_dir = std::env::temp_dir().join(format!("pob-item-implicit-{}", std::process::id()));
+    let engine = Engine::boot(EngineConfig {
+        pob_root: root,
+        user_dir: user_dir.clone(),
+        cache_dir: None,
+    })
+    .unwrap();
+    engine
+        .call("new_build", &json!({"name":"Implicit test"}))
+        .unwrap();
+    let generation = engine.call("get_build", &Value::Null).unwrap()["generation"].clone();
+    if engine.call("version", &Value::Null).unwrap()["game"] != "poe1" {
+        let detail = engine
+            .call("item_customization", &json!({"raw":RING}))
+            .unwrap();
+        assert!(detail["implicitSources"].is_null());
+        assert!(engine.call("item_customize", &json!({"raw":RING,"operation":"add_modifier","implicit":true,"text":"+10 to Strength"})).is_err());
+        drop(engine);
+        std::fs::remove_dir_all(user_dir).unwrap();
+        return;
+    }
+    let helmet = "Rarity: Rare\nEldritch Crown\nHubris Circlet\nSearing Exarch Item\nEater of Worlds Item\nItem Level: 86\nImplicits: 0\n+80 to maximum Energy Shield";
+    let plain = helmet.replace("Searing Exarch Item\nEater of Worlds Item\n", "");
+    let plain_detail = engine
+        .call("item_customization", &json!({"raw":plain}))
+        .unwrap();
+    assert_eq!(plain_detail["implicitSources"], json!([]));
+    let detail = engine
+        .call("item_customization", &json!({"raw":helmet}))
+        .unwrap();
+    let sources: Vec<&str> = detail["implicitSources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(sources, ["EXARCH", "EATER"]);
+    let before = snapshot(&engine);
+    let mut raw = helmet.to_owned();
+    let mut first_edit = None;
+    for (source, query) in [("EXARCH", "cast speed"), ("EXARCH", "spells"), ("EATER", "")] {
+        let options = engine
+            .call(
+                "item_modifier_options",
+                &json!({"raw":raw,"source":source,"query":query,"implicit":true}),
+            )
+            .unwrap();
+        let pick = &options["options"][0];
+        let edit = json!({"operation":"add_modifier","implicit":true,"source":source,"modId":pick["id"],"label":pick["label"]});
+        first_edit.get_or_insert(edit.clone());
+        let mut params = edit;
+        params["raw"] = json!(raw);
+        params["generation"] = generation.clone();
+        let data = engine.call("item_customize", &params).unwrap();
+        assert!(
+            data["modifiers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["section"] == "implicit" && m["text"] == pick["label"]),
+            "{source} {query} did not add {pick}"
+        );
+        assert_eq!(snapshot(&engine), before);
+        raw = data["raw"].as_str().unwrap().to_owned();
+    }
+    assert_eq!(raw.matches("{exarch}").count(), 1, "a second Exarch implicit must replace the first: {raw}");
+    assert_eq!(raw.matches("{eater}").count(), 1);
+    assert!(raw.contains("Implicits: 2"));
+    let custom = engine.call("item_customize", &json!({"raw":raw,"operation":"add_modifier","implicit":true,"text":"+1 to Level of all Minion Skill Gems"})).unwrap();
+    let custom_raw = custom["raw"].as_str().unwrap();
+    assert!(custom_raw.contains("Implicits: 3"), "{custom_raw}");
+    assert!(custom_raw.contains("+1 to Level of all Minion Skill Gems"));
+    assert_eq!(snapshot(&engine), before);
+    for invalid in [
+        json!({"raw":raw,"operation":"add_modifier","implicit":true,"source":"EXARCH","modId":"1","label":"not this one"}),
+        json!({"raw":plain,"operation":"add_modifier","implicit":true,"source":"EATER","modId":"1"}),
+        json!({"raw":raw,"operation":"add_modifier","implicit":true,"text":"two\nlines"}),
+    ] {
+        assert!(engine.call("item_customize", &invalid).is_err(), "{invalid}");
+        assert_eq!(snapshot(&engine), before);
+    }
+    let first_edit = first_edit.unwrap();
+    let mut draft_params = first_edit.clone();
+    draft_params["raw"] = json!(helmet);
+    let draft = engine.call("item_customize", &draft_params).unwrap();
+    let added = engine.call("item_edit", &json!({"text":helmet})).unwrap();
+    let mut saved_params = first_edit;
+    saved_params["itemId"] = added["itemId"].clone();
+    let saved = engine.call("item_customize", &saved_params).unwrap();
+    assert_eq!(saved["raw"], draft["raw"]);
+    drop(engine);
+    std::fs::remove_dir_all(user_dir).unwrap();
+}

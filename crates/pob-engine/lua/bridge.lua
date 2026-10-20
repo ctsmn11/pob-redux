@@ -5723,16 +5723,22 @@ do
 			enchantable = M.item_enchants(p).available,
 			canCopyAnoints = item.canBeAnointed == true or item.base.type == "Amulet",
 			canCopyAugments = IS_POE2 and (item.base.socketLimit or 0) > 0,
-			modifierSources = M._modifierSources(item) }
+			modifierSources = M._modifierSources(item), implicitSources = M._modifierSources(item, true) }
 	end
 
-	-- PoB's own "Add modifier" popup, opened headless on the item, so every source and its list match PoB.
-	M._modifierPopup = function(item, fn)
+	-- PoB's own "Add modifier" and "Add Implicit" popups, opened headless on the item, so every source and its list match PoB.
+	M._modifierPopup = function(item, fn, implicit)
 		local tab = build.itemsTab
 		local shown, depth = tab.displayItem, #main.popups
 		tab.displayItem = item
 		local ok, res = pcall(function()
-			tab:AddCustomModifierToDisplayItem()
+			if implicit then
+				local button = tab.controls.displayItemAddImplicit
+				if not (button and button:GetProperty("shown")) then error("this item takes no implicit modifiers", 0) end
+				button.onClick()
+			else
+				tab:AddCustomModifierToDisplayItem()
+			end
 			return fn(main.popups[1].controls)
 		end)
 		while #main.popups > depth do main:ClosePopup() end
@@ -5740,11 +5746,17 @@ do
 		if not ok then error(res, 0) end
 		return res
 	end
-	M._modifierList = function(c, source)
+	M._modifierList = function(c, source, implicit)
 		for i, s in ipairs(c.source.list) do
 			if s.sourceId == source then
 				if c.source.selIndex ~= i then c.source:SetSel(i) end
-				return c.modSelect.list
+				if not implicit then return c.modSelect.list end
+				local list = {}
+				for g, group in ipairs(c.modGroupSelect.list) do
+					c.modGroupSelect.selFunc(g, group)
+					for _, entry in ipairs(c.modSelect.list) do list[#list + 1] = entry end
+				end
+				return list
 			end
 		end
 		error("this item takes no " .. tostring(source) .. " modifiers", 0)
@@ -5752,15 +5764,16 @@ do
 	M._modifierLabel = function(label)
 		return (tostring(label):gsub("%^x%x%x%x%x%x%x", ""):gsub("%^%d", ""):gsub("%s%s+", " · "))
 	end
-	M._modifierSources = function(item)
+	M._modifierSources = function(item, implicit)
 		local ok, list = pcall(M._modifierPopup, item, function(c)
 			local out = array({})
 			for _, s in ipairs(c.source.list) do
 				if s.sourceId ~= "CUSTOM" then out[#out + 1] = { id = s.sourceId, label = s.label } end
 			end
 			return out
-		end)
-		return ok and list or array({})
+		end, implicit)
+		if ok then return list end
+		return implicit and null or array({})
 	end
 
 	M.item_modifier_options = function(p)
@@ -5769,7 +5782,7 @@ do
 		for word in tostring(p.query or ""):lower():gmatch("%S+") do words[#words + 1] = word end
 		return M._modifierPopup(item, function(c)
 			local result = array({})
-			for i, entry in ipairs(M._modifierList(c, p.source)) do
+			for i, entry in ipairs(M._modifierList(c, p.source, p.implicit == true)) do
 				local label = M._modifierLabel(entry.label)
 				local lower, match = label:lower(), true
 				for _, word in ipairs(words) do
@@ -5780,7 +5793,7 @@ do
 			local total = #result
 			while #result > 100 do table.remove(result) end
 			return { options = result, total = total }
-		end)
+		end, p.implicit == true)
 	end
 
 	M.item_customize = function(p)
@@ -5820,6 +5833,30 @@ do
 				if not count or count % 1 ~= 0 or count < 0 or count > limit then error("invalid rune socket count", 0) end
 				item.itemSocketCount = count
 				item:UpdateRunes()
+			elseif p.operation == "add_modifier" and p.implicit == true then
+				local text = not p.source and singleLine(p.text)
+				local entry = M._modifierPopup(item, function(c)
+					if p.source then return M._modifierList(c, p.source, true)[tonumber(p.modId) or 0] end
+				end, true)
+				if text then
+					table.insert(item.implicitModLines, { line = text, custom = true })
+				else
+					if not entry or (p.label and M._modifierLabel(entry.label) ~= p.label) then error("the modifier list changed; pick it again", 0) end
+					-- As PoB's applyCandidateMod writes them: an Eldritch implicit replaces its own kind, a Vestigial one replaces all.
+					local kind, at = entry.type, nil
+					if kind == "exarch" or kind == "eater" then
+						for i, line in ipairs(item.implicitModLines) do
+							if line[kind] then at = i break end
+						end
+					elseif kind == "vestigial" then
+						item.implicitModLines = {}
+					end
+					for i, line in ipairs(entry.mod) do
+						local modLine = { line = line, modTags = entry.mod.modTags }
+						if kind then modLine[kind] = true end
+						if at then item.implicitModLines[at + i - 1] = modLine else table.insert(item.implicitModLines, modLine) end
+					end
+				end
 			elseif p.operation == "add_modifier" then
 				if p.source then
 					local entry = M._modifierPopup(item, function(c) return M._modifierList(c, p.source)[tonumber(p.modId) or 0] end)

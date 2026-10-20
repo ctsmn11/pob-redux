@@ -1313,7 +1313,7 @@ export type ItemCustomizationEdit =
   | { operation: "normalize" }
   | { operation: "copy_anoints" | "copy_augments"; sourceSlot?: string }
   | { operation: "rune_sockets"; count: number }
-  | { operation: "add_modifier"; text?: string; source?: string; modId?: string; label?: string }
+  | { operation: "add_modifier"; text?: string; source?: string; modId?: string; label?: string; implicit?: boolean }
   | { operation: "modifier"; section: string; index: number; text?: string; disabled?: boolean; remove?: boolean; range?: number };
 
 export interface ItemCustomization {
@@ -1332,6 +1332,8 @@ export interface ItemCustomization {
   canCopyAugments: boolean;
   /** PoB's "Add modifier" sources for the item, without Custom. */
   modifierSources: { id: string; label: string }[];
+  /** PoB's "Add Implicit" sources, without Custom; null when PoB offers no Add Implicit for the item. */
+  implicitSources: { id: string; label: string }[] | null;
   affixes: ItemAffixes;
   runes: ItemRunes;
   variants: ItemVariants;
@@ -1844,8 +1846,8 @@ export const engine = {
     call<{ tooltip: Tooltip; slots: { slot: string; label: string }[]; generation: number; rev: number }>("item_preview", { raw, generation }),
   itemCustomization: (target: ItemTarget) => call<ItemCustomization>("item_customization", target),
   customizeItem: (target: ItemTarget, edit: ItemCustomizationEdit) => call<ItemCustomization>("item_customize", { ...target, ...edit }),
-  itemModifierOptions: (target: ItemTarget, source: string, query: string) =>
-    call<{ options: { id: string; label: string; level: number | null }[]; total: number }>("item_modifier_options", { ...target, source, query }),
+  itemModifierOptions: (target: ItemTarget, source: string, query: string, implicit = false) =>
+    call<{ options: { id: string; label: string; level: number | null }[]; total: number }>("item_modifier_options", { ...target, source, query, implicit }),
   /** `variants`: one entry per pick, a variant's name, a substring of it, or its index. */
   itemDbEquip: (db: "unique" | "rare", name: string, slotName?: string, variants?: (string | number)[]) =>
     call<{ ok: boolean; itemId: number; slot: string; itemName: string; variants: string[]; mods: string[] }>("item_db_equip", { db, name, slotName, variants }),
