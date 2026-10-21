@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { untrack } from "svelte";
 
 /** Mirrors pob_engine::EngineStatus. */
@@ -162,8 +162,10 @@ export function poolRelease(): Promise<number> {
 }
 
 /** Node power scored across the worker pool (falls back to PoB's sequential builder). */
-export function powerScanParallel(stat: string | null, maxDepth: number | null): Promise<{ result: TreePower; elapsed_ms: number }> {
-  return invoke<{ result: TreePower; elapsed_ms: number }>("power_scan_parallel", { stat, maxDepth });
+export function powerScanParallel(stat: string | null, maxDepth: number | null, onProgress?: (pct: number) => void): Promise<{ result: TreePower; elapsed_ms: number }> {
+  const channel = new Channel<number>();
+  if (onProgress) channel.onmessage = onProgress;
+  return invoke<{ result: TreePower; elapsed_ms: number }>("power_scan_parallel", { stat, maxDepth, onProgress: channel });
 }
 
 export interface PointPlanPick {

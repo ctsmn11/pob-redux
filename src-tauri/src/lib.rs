@@ -242,12 +242,16 @@ async fn power_scan_parallel(
     state: State<'_, AppState>,
     stat: Option<String>,
     max_depth: Option<f64>,
+    on_progress: tauri::ipc::Channel<u32>,
 ) -> Result<CallResult, String> {
     let engine = state.engine();
     let pool = state.pool();
     tauri::async_runtime::spawn_blocking(move || {
         let t0 = std::time::Instant::now();
-        let result = match pob_engine::pool::power_scan(&engine, &pool, stat.as_deref(), max_depth) {
+        let progress = |done: usize, total: usize| {
+            let _ = on_progress.send((done * 100 / total.max(1)) as u32);
+        };
+        let result = match pob_engine::pool::power_scan_with(&engine, &pool, stat.as_deref(), max_depth, &progress) {
             Ok(v) => v,
             Err(e) => {
                 log::warn!("parallel power scan failed ({e}); falling back to PowerBuilder");

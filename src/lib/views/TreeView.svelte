@@ -354,7 +354,7 @@
         // worker pool: one call, all cores; the sequential builder remains the fallback
         const st = await poolStatus();
         if (st.size > 0) {
-          const r = await powerScanParallel(powerStat, powerDepth);
+          const r = await powerScanParallel(powerStat, powerDepth, (p) => (powerProgress = p));
           power = r.result;
           powerNote = m.tree_power_elapsed({ ms: Math.round(r.elapsed_ms), engines: Math.max(1, st.ready) });
           scored = true;
@@ -2347,6 +2347,14 @@
       <div class="wsbadge" class:set2={wsMode === 2}>{m.tree_weapon_set_badge({ set: wsMode === 1 ? "I" : "II" })}</div>
     {/if}
 
+    {#if powerOn && powerBusy}
+      <div class="scanning" role="status">
+        <span>{m.tree_scoring_nodes()}</span>
+        <span class="num">{powerProgress}%</span>
+        <div class="scan-track"><div class="scan-fill" class:idle={powerProgress === 0} style:width="{powerProgress || 100}%"></div></div>
+      </div>
+    {/if}
+
     {#if assetsMissing}
       <div class="notice">{m.tree_assets_missing_before()} <span class="mono">pnpm sync -- --tree-assets</span>{m.tree_assets_missing_after()}</div>
     {/if}
@@ -2782,6 +2790,59 @@
   .report-list {
     flex: 1;
     overflow-y: auto;
+  }
+  .report-list.stale {
+    opacity: 0.45;
+  }
+  .scanning {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: grid;
+    grid-template-columns: auto auto;
+    justify-content: space-between;
+    gap: 6px 16px;
+    min-width: 220px;
+    padding: 8px 12px;
+    background: color-mix(in srgb, var(--bg-1) 92%, transparent);
+    border: 1px solid var(--line-1);
+    border-radius: var(--r-2);
+    font-size: var(--fs-xs);
+    color: var(--fg-0);
+    pointer-events: none;
+  }
+  .scanning .num {
+    font-family: var(--font-mono);
+  }
+  .scan-track {
+    grid-column: 1 / -1;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--bg-3);
+    overflow: hidden;
+  }
+  .scan-fill {
+    height: 100%;
+    background: var(--focus);
+    transition: width 120ms linear;
+  }
+  .scan-fill.idle {
+    animation: scan-wait 1.4s ease-in-out infinite;
+  }
+  @keyframes scan-wait {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .scan-fill.idle {
+      animation: none;
+    }
   }
   .report-row {
     appearance: none;

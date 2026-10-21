@@ -4,6 +4,7 @@
 //! engine's build by XML before a scatter, and are dropped again once the
 //! pool goes idle.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -222,6 +223,11 @@ impl EnginePool {
     /// in chunk order. Workers pull chunks from a shared queue, so uneven
     /// chunk costs don't leave anyone idle.
     pub fn scatter(&self, method: &str, chunks: Vec<Value>) -> Result<Vec<Value>> {
+        self.scatter_with(method, chunks, &|_, _| {})
+    }
+
+    /// `scatter`, calling `progress(done, total)` as each chunk finishes.
+    pub fn scatter_with(&self, method: &str, chunks: Vec<Value>, progress: &(dyn Fn(usize, usize) + Sync)) -> Result<Vec<Value>> {
         let (ws, respawned) = self.workers()?;
         if respawned {
             *self.synced_xml.lock().unwrap() = None;
@@ -233,15 +239,18 @@ impl EnginePool {
         let n = chunks.len();
         let queue = Mutex::new(chunks.into_iter().enumerate().collect::<std::collections::VecDeque<_>>());
         let results: Mutex<Vec<Option<Result<Value>>>> = Mutex::new((0..n).map(|_| None).collect());
+        let finished = AtomicUsize::new(0);
         std::thread::scope(|s| {
             for w in ws.iter().take(n.max(1)) {
                 let queue = &queue;
                 let results = &results;
+                let finished = &finished;
                 s.spawn(move || loop {
                     let next = queue.lock().unwrap().pop_front();
                     let Some((i, params)) = next else { break };
                     let r = w.call(method, params).map(|o| o.result);
                     results.lock().unwrap()[i] = Some(r);
+                    progress(finished.fetch_add(1, Ordering::Relaxed) + 1, n);
                 });
             }
         });
@@ -281,6 +290,17 @@ fn main_xml(engine: &EngineHandle) -> Result<String> {
 /// same per-node calc PoB's PowerBuilder runs, written back into the main
 /// engine so `tree_power_result` and the power report are unchanged.
 pub fn power_scan(engine: &EngineHandle, pool: &EnginePool, stat: Option<&str>, max_depth: Option<f64>) -> Result<Value> {
+    power_scan_with(engine, pool, stat, max_depth, &|_, _| {})
+}
+
+/// `power_scan`, calling `progress(done, total)` as each chunk of nodes is scored.
+pub fn power_scan_with(
+    engine: &EngineHandle,
+    pool: &EnginePool,
+    stat: Option<&str>,
+    max_depth: Option<f64>,
+    progress: &(dyn Fn(usize, usize) + Sync),
+) -> Result<Value> {
     let part = engine
         .call("tree_power_partition", serde_json::json!({ "stat": stat, "maxDepth": max_depth }))?
         .result;
@@ -304,7 +324,7 @@ pub fn power_scan(engine: &EngineHandle, pool: &EnginePool, stat: Option<&str>, 
                 })
             })
             .collect();
-        for r in pool.scatter("score_nodes", chunks)? {
+        for r in pool.scatter_with("score_nodes", chunks, progress)? {
             if let Some(list) = r.get("nodes").and_then(|v| v.as_array()) {
                 nodes.extend(list.iter().cloned());
             }
