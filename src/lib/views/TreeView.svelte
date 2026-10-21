@@ -298,28 +298,44 @@
     return "unalloc";
   }
 
-  /** PoB's heat-map colour: offence → red, defence → blue, both → green mix. */
-  function powerColor(id: number, S: Scene): string | null {
+  const HEAT_OFFENCE = [255, 92, 72];
+  const HEAT_DEFENCE = [84, 140, 255];
+  /** PoB's heat-map strength curve, with offence leaning red and defence blue. */
+  function heatOf(id: number, S: Scene): { rgb: string; k: number } | null {
     const pwr = S.heat;
-    if (!pwr) return null;
-    const pw = pwr.nodes[String(id)];
-    if (!pw) return null;
+    const pw = pwr?.nodes[String(id)];
+    if (!pwr || !pw) return null;
     const curve = (v: number, max: number) => Math.min(1, Math.sqrt((Math.max(v, 0) / (max || 1)) * 1.5));
-    let r = 0;
-    let g = 0;
-    let b = 0;
-    if (pwr.stat) {
-      r = curve(pw.s ?? 0, pwr.max.singleStat);
-    } else {
-      const dps = curve(pw.o ?? 0, pwr.max.offence);
-      const def = curve(pw.d ?? 0, pwr.max.defence);
-      const mix = (Math.max(dps - 0.5, 0) + Math.max(def - 0.5, 0)) / 2;
-      r = dps;
-      g = mix;
-      b = def;
+    const o = pwr.stat ? curve(pw.s ?? 0, pwr.max.singleStat) : curve(pw.o ?? 0, pwr.max.offence);
+    const d = pwr.stat ? 0 : curve(pw.d ?? 0, pwr.max.defence);
+    const k = Math.max(o, d);
+    if (k < 0.05) return null;
+    const t = d / (o + d);
+    const c = HEAT_OFFENCE.map((v, i) => Math.round(v + (HEAT_DEFENCE[i] - v) * t));
+    return { rgb: c.join(","), k };
+  }
+
+  function drawHeat(ctx: CanvasRenderingContext2D, S: Scene, V: View) {
+    const M = model;
+    if (!M || !S.heat) return;
+    const { tx, ty, inView, bounds } = viewMath(V);
+    for (const n of nodesNear(M, bounds, Math.max(gridOf(M).reach * 2.5, 12 / scale))) {
+      if (n.hidden || S.alloc.has(n.id) || S.granted.has(n.id)) continue;
+      const h = heatOf(n.id, S);
+      if (!h) continue;
+      // A mastery's art is mostly transparent around its symbol, so it gets a halo sized to the symbol.
+      const inner = (n.kind === "mastery" ? n.size.base * 0.4 : n.size.overlay || n.size.base) * scale;
+      const outer = Math.max(inner * (1.5 + h.k), 5 + 6 * h.k);
+      if (!inView(n.x, n.y, outer / scale)) continue;
+      const sx = tx(n.x);
+      const sy = ty(n.y);
+      const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, outer);
+      g.addColorStop(0, `rgba(${h.rgb},${0.15 + 0.3 * h.k})`);
+      g.addColorStop(Math.min(inner / outer, 0.75), `rgba(${h.rgb},${0.35 + 0.55 * h.k})`);
+      g.addColorStop(1, `rgba(${h.rgb},0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(sx - outer, sy - outer, outer * 2, outer * 2);
     }
-    if (r + g + b < 0.05) return null;
-    return `rgba(${(r * 255) | 0},${(g * 255) | 0},${(b * 255) | 0},0.9)`;
   }
 
   async function computePower() {
@@ -1154,6 +1170,8 @@
       ctx.globalAlpha = 1;
     }
 
+    drawHeat(ctx, S, V);
+
     // --- connectors, batched per state ---
     ctx.lineCap = "round";
     for (const b of edgeBuckets) b.length = 0;
@@ -1193,7 +1211,7 @@
       const isAlloc = S.alloc.has(n.id);
       const isGranted = S.granted.has(n.id);
       const lit = isAlloc || isGranted;
-      const st = heat ? "alloc" : nodeState(n, S);
+      const st = nodeState(n, S);
       const onPath = S.path.has(n.id);
       const dimAsc = n.asc !== null && n.asc !== S.ascNodes;
       const baseAlpha = (dimAsc ? 0.6 : 1) * (otherSet(n.id, S) ? OTHER_SET_ALPHA : 1);
@@ -1223,20 +1241,10 @@
 
       ctx.globalAlpha = baseAlpha;
 
-      if (heat && !lit) {
-        const col = powerColor(n.id, S);
-        if (col) {
-          ctx.beginPath();
-          ctx.arc(sx, sy, Math.max((n.size.overlay || n.size.base) * scale * 0.95, 2.5), 0, Math.PI * 2);
-          ctx.fillStyle = col;
-          ctx.fill();
-        }
-      }
-
       if (n.kind === "socket") {
         const half = n.size.base * scale;
         if (half < DOT_PX) {
-          if (!heat || lit) dots[dotBucket(n, st)].push(sx, sy, half);
+          dots[dotBucket(n, st)].push(sx, sy, half);
         } else {
           const frameName = frameFor(n, S, st);
           if (frameName) A.draw(ctx, frameName, sx, sy, half, half);
@@ -1248,7 +1256,7 @@
         }
       } else {
         if (n.size.base * scale >= ICON_PX) {
-          const off = !lit && !heat;
+          const off = !lit && !(heat && heatOf(n.id, S));
           drawCircularAsset(ctx, A, iconFor(n, S, lit), sx, sy, n.size.base * scale, off);
           if (off) {
             ctx.beginPath();
@@ -1260,7 +1268,7 @@
         const half = n.size.overlay * scale;
         const tint = tintFor(n, S);
         if (half < DOT_PX) {
-          if (n.size.overlay > 0 && (!heat || lit)) dots[dotBucket(n, st, tint)].push(sx, sy, half);
+          if (n.size.overlay > 0) dots[dotBucket(n, st, tint)].push(sx, sy, half);
         } else {
           const frameName = frameFor(n, S, st);
           if (frameName && n.size.overlay > 0) {
@@ -1404,7 +1412,6 @@
     if (!M) return;
     const { tx, ty, inView } = viewMath(V);
     const A = assets;
-    const heat = S.heat !== null;
     const B = H.base;
     for (const id of H.hot) {
       const n = M.nodes.get(id);
@@ -1414,7 +1421,7 @@
       const sy = ty(n.y);
       if (!A) {
         drawFallback(ctx, n, sx, sy, S.alloc.has(n.id) || S.granted.has(n.id), S.path.has(n.id), S.hover?.id === n.id);
-      } else if (!heat) {
+      } else {
         const st = nodeState(n, S);
         const half = (n.kind === "socket" ? n.size.base : n.size.overlay) * scale;
         const tint = tintFor(n, S);
