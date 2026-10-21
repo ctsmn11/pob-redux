@@ -3355,7 +3355,17 @@ local function groupSkills(group)
 				entry.mineCount = opt(src.skillMineCount)
 			end
 			local minionList = activeSkill.minionList or ge.minionList
-			if not flags.disable and minionList and minionList[1] then
+			-- Animate Guardian and Animate Weapon wear an item set instead of picking a minion (Build.lua).
+			if not flags.disable and ge.minionHasItemSet then
+				local itemsTab = build.itemsTab
+				local sets = array({})
+				for _, id in ipairs(itemsTab.itemSetOrderList) do
+					local set = itemsTab.itemSets[id]
+					if set then sets[#sets + 1] = { id = id, title = set.title or "Default" } end
+				end
+				entry.minionItemSets = sets
+				entry.minionItemSet = opt(src.skillMinionItemSet or itemsTab.itemSetOrderList[1])
+			elseif not flags.disable and minionList and minionList[1] then
 				local minions = array({})
 				for _, mid in ipairs(minionList) do
 					local m = data.minions[mid]
@@ -3525,6 +3535,11 @@ M.set_main_skill_options = function(p)
 			src.skillMinionCalcs = p.minionId
 		end
 		if p.minionSkill ~= nil then src.skillMinionSkill = tonumber(p.minionSkill) end
+		if p.minionItemSet ~= nil then
+			local id = tonumber(p.minionItemSet)
+			if not build.itemsTab.itemSets[id] then error("no item set " .. tostring(p.minionItemSet)) end
+			src.skillMinionItemSet = id
+		end
 	end
 	build.modFlag = true
 	refresh()

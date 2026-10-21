@@ -876,6 +876,9 @@ export interface SkillEntry {
   mineCount?: number | null;
   minions?: { id: string; name: string }[];
   minion?: string | null;
+  /** Set for skills whose minion wears an item set (Animate Guardian, Animate Weapon); replaces `minions`. */
+  minionItemSets?: { id: number; title: string }[];
+  minionItemSet?: number | null;
   /** Set when this skill picks its minion from the player's library, so the library button belongs here. */
   minionLibrary?: "spectre" | "beast";
   minionSkills?: string[];
@@ -1797,7 +1800,7 @@ export const engine = {
   setMainSkill: (index: number) => call<Skills>("set_main_skill", { index }),
   setMainSkillOptions: (
     groupIndex: number,
-    patch: { mainActiveSkill?: number; part?: number; statSet?: number; stageCount?: number; mineCount?: number; minionId?: string; minionSkill?: number },
+    patch: { mainActiveSkill?: number; part?: number; statSet?: number; stageCount?: number; mineCount?: number; minionId?: string; minionSkill?: number; minionItemSet?: number },
   ) => call<Skills>("set_main_skill_options", { groupIndex, ...patch }),
   addSocketGroup: (label?: string) => call<{ ok: boolean; groupIndex: number }>("add_socket_group", { label }),
   removeSocketGroup: (index: number) => call<Skills>("remove_socket_group", { index }),

@@ -303,6 +303,16 @@
                 </select>
               </label>
             {/if}
+            {#if mainSkill?.minionItemSets?.length}
+              <label class="field">
+                <span class="label">{m.skills_minion_item_set()}</span>
+                <select class="select" value={mainSkill.minionItemSet ?? mainSkill.minionItemSets[0].id} disabled={mainSkill.minionItemSets.length < 2} onchange={(e) => patchMainSkill({ minionItemSet: Number((e.target as HTMLSelectElement).value) })}>
+                  {#each mainSkill.minionItemSets as set}
+                    <option value={set.id}>{set.title}</option>
+                  {/each}
+                </select>
+              </label>
+            {/if}
             {#if mainSkill?.minionLibrary}
               <button
                 class="btn sm wide"
