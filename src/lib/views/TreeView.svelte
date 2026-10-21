@@ -187,6 +187,8 @@
   let powerProgress = $state(0);
   let powerNote = $state("");
   let showReport = $state(false);
+  let reportSort = $state<"point" | "node">("point");
+  let reportAnoints = $state(false);
   let powerKey = "";
   let powerRerun = false;
 
@@ -385,25 +387,36 @@
 
   const reportRows = $derived.by(() => {
     if (!power || !model) return [];
+    const M = model;
+    const byNode = reportSort === "node";
+    const listed = (n: TNode | undefined): n is TNode => !!n && (!reportAnoints || n.recipe !== null);
     if (power.stat) {
       return power.report
-        .filter((r) => !r.allocated && r.pathPower !== 0)
-        .sort((a, b) => b.pathPower - a.pathPower)
+        .filter((r) => !r.allocated && (byNode ? r.power : r.pathPower) !== 0 && listed(M.nodes.get(r.id)))
+        .sort((a, b) => (byNode ? b.power - a.power : b.pathPower - a.pathPower))
         .slice(0, 60)
-        .map((r) => ({ id: r.id, name: r.name, a: r.pathPowerStr, b: r.powerStr, dist: r.pathDist ?? 0 }));
+        .map((r) => ({ key: `${r.id}:${r.name}`, id: r.id, name: r.name, kind: M.nodes.get(r.id)!.kind, a: r.pathPowerStr, b: r.powerStr, dist: r.pathDist ?? 0 }));
     }
-    const rows: { id: number; name: string; a: string; b: string; dist: number; score: number }[] = [];
+    const rows: { key: string; id: number; name: string; kind: string; a: string; b: string; dist: number; score: number }[] = [];
     for (const [id, pw] of Object.entries(power.nodes)) {
-      const n = model.nodes.get(Number(id));
-      if (!n || allocated.has(n.id) || n.asc) continue;
+      const n = M.nodes.get(Number(id));
+      if (!listed(n) || allocated.has(n.id) || n.asc) continue;
       const dist = Math.max(pw.dist ?? 1, 1);
+      const per = byNode ? 1 : dist;
       const o = (pw.o ?? 0) * 100;
       const d = (pw.d ?? 0) * 100;
       if (o <= 0 && d <= 0) continue;
-      rows.push({ id: n.id, name: n.name, a: `${(o / dist).toFixed(2)}%`, b: `${(d / dist).toFixed(2)}%`, dist, score: (o + d) / dist });
+      rows.push({ key: id, id: n.id, name: n.name, kind: n.kind, a: `${(o / per).toFixed(2)}%`, b: `${(d / per).toFixed(2)}%`, dist, score: (o + d) / per });
     }
     return rows.sort((x, y) => y.score - x.score).slice(0, 60);
   });
+
+  function toggleAnoints() {
+    reportAnoints = !reportAnoints;
+    if (!reportAnoints) return;
+    reportSort = "node";
+    powerDepth = null;
+  }
 
   let focusNode = $state<number | null>(null);
   let focusT0 = 0;
@@ -2354,20 +2367,31 @@
           <span class="label">{m.tree_power_report()}</span>
           <span class="dim small">{power?.label ?? ""}</span>
         </div>
-        <div class="report-cols label">
-          <span>{m.tree_col_node()}</span><span class="r">{power?.stat ? m.tree_col_per_point() : m.tree_col_off_per_point()}</span><span class="r">{power?.stat ? m.tree_col_node_value() : m.tree_col_def_per_point()}</span><span class="r">{m.tree_col_points()}</span>
+        <div class="report-tools">
+          <div class="seg" role="radiogroup" aria-label={m.tree_report_sort()}>
+            <button role="radio" aria-checked={reportSort === "point"} class:on={reportSort === "point"} onclick={() => (reportSort = "point")}>{m.tree_col_per_point()}</button>
+            <button role="radio" aria-checked={reportSort === "node"} class:on={reportSort === "node"} onclick={() => (reportSort = "node")}>{m.tree_col_node_value()}</button>
+          </div>
+          <button class="btn sm ghost" class:on={reportAnoints} aria-pressed={reportAnoints} title={m.tree_report_anoints_title()} onclick={toggleAnoints}>{m.tree_report_anoints()}</button>
         </div>
-        <div class="report-list">
-          {#each reportRows as r (r.id)}
+        <div class="report-cols label">
+          {#if power?.stat}
+            <span>{m.tree_col_node()}</span><span class="r" class:sorted={reportSort === "point"}>{m.tree_col_per_point()}</span><span class="r" class:sorted={reportSort === "node"}>{m.tree_col_node_value()}</span><span class="r">{m.tree_col_points()}</span>
+          {:else}
+            <span>{m.tree_col_node()}</span><span class="r">{reportSort === "node" ? m.tree_col_off() : m.tree_col_off_per_point()}</span><span class="r">{reportSort === "node" ? m.tree_col_def() : m.tree_col_def_per_point()}</span><span class="r">{m.tree_col_points()}</span>
+          {/if}
+        </div>
+        <div class="report-list" class:stale={powerBusy}>
+          {#each reportRows as r (r.key)}
             <button class="report-row" class:sel={focusNode === r.id} onclick={() => jumpTo(r.id)} onmouseenter={() => { const n = model?.nodes.get(r.id); if (n) setHover(n); }}>
-              <span class="rn">{r.name}</span>
+              <span class="rn" class:notable={r.kind === "notable"} class:keystone={r.kind === "keystone"}>{r.name}</span>
               <span class="r num"><PobText text={r.a} /></span>
               <span class="r num"><PobText text={r.b} /></span>
               <span class="r num dim">{r.dist}</span>
             </button>
           {/each}
           {#if reportRows.length === 0}
-            <div class="dim small pad">{powerBusy ? m.tree_scoring_nodes() : m.tree_no_node_improves()}</div>
+            <div class="dim small pad">{powerBusy ? m.tree_scoring_nodes() : reportAnoints ? m.tree_no_anoint_improves() : m.tree_no_node_improves()}</div>
           {/if}
         </div>
       </aside>
@@ -2712,7 +2736,7 @@
     top: 10px;
     right: 10px;
     bottom: 10px;
-    width: 360px;
+    width: 400px;
     display: flex;
     flex-direction: column;
     background: color-mix(in srgb, var(--bg-1) 92%, transparent);
@@ -2730,13 +2754,30 @@
   .report-cols,
   .report-row {
     display: grid;
-    grid-template-columns: 1fr 72px 72px 34px;
+    grid-template-columns: 1fr 92px 92px 28px;
     gap: 8px;
     padding: 4px 10px;
     align-items: baseline;
   }
   .report-cols {
     border-bottom: 1px solid var(--line-0);
+  }
+  .report-cols .sorted {
+    color: var(--fg-0);
+  }
+  .report-tools {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--line-0);
+  }
+  .rn.notable {
+    color: var(--c-currency);
+  }
+  .rn.keystone {
+    color: var(--c-rare);
   }
   .report-list {
     flex: 1;
