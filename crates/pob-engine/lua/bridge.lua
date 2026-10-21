@@ -3618,6 +3618,13 @@ function gemUtil.gemDpsCandidates(group)
 	return ids
 end
 
+function gemUtil.dpsOf(output, dpsField)
+	return (dpsField == "FullDPS" and output[dpsField] ~= nil and output[dpsField])
+		or (output.Minion and output.Minion.CombinedDPS)
+		or (output[dpsField] ~= nil and output[dpsField])
+		or 0
+end
+
 -- Score gems for a group the way GemSelectControl does: a hypothetical gem
 -- instance is appended, the misc calculator runs, the instance is removed.
 function gemUtil.scoreGems(group, gemIds, dpsField)
@@ -3625,10 +3632,7 @@ function gemUtil.scoreGems(group, gemIds, dpsField)
 	local fastCalcOptions = { nodeAlloc = true, requirementsItems = true, requirementsGems = true, skipEHP = dpsField ~= "TotalEHP", fullDPSOnly = useFullDPS }
 	local calcFunc, calcBase = build.calcsTab:GetMiscCalculator(build)
 	local function fieldOf(output)
-		return (useFullDPS and output[dpsField] ~= nil and output[dpsField])
-			or (output.Minion and output.Minion.CombinedDPS)
-			or (output[dpsField] ~= nil and output[dpsField])
-			or 0
+		return gemUtil.dpsOf(output, dpsField)
 	end
 	local dps = {}
 	local gemList = group.gemList
@@ -3880,6 +3884,23 @@ function gemUtil.gemInstanceFor(p)
 end
 
 -- PoB's own gem tooltip (GemTooltip.lua), returned as sized, colour-coded lines.
+-- PoB's gem enable-checkbox tooltip (SkillsTab): the sidebar stats that switching this gem would change.
+function gemUtil.addToggleCompare(tt, gem)
+	local calcFunc, calcBase = build.calcsTab:GetMiscCalculator(build)
+	if not calcFunc then return end
+	local enabled = gem.enabled
+	gem.enabled = enabled == false
+	local ok, output = pcall(calcFunc)
+	gem.enabled = enabled
+	if not ok or not output then return end
+	local at = #tt.lines
+	tt:AddSeparator(10)
+	local header = enabled == false and "^7Enabling this gem will give you:" or "^7Disabling this gem will give you:"
+	if build:AddStatComparesToTooltip(tt, calcBase, output, header) == 0 then
+		while #tt.lines > at do table.remove(tt.lines) end
+	end
+end
+
 M.gem_tooltip = function(p)
 	ensureBuild()
 	local gem = gemUtil.gemInstanceFor(p)
@@ -3887,7 +3908,52 @@ M.gem_tooltip = function(p)
 	local tt = new("Tooltip"):Tooltip()
 	local ok, err = pcall(gemUtil.gemTooltipModule.AddGemTooltip, tt, build, gem)
 	if not ok then error("tooltip failed: " .. tostring(err), 0) end
-	return tooltipPayload(tt)
+	if p.compare and not p.gemId then gemUtil.addToggleCompare(tt, gem) end
+	local out = tooltipPayload(tt)
+	-- A minion build puts the "Minion:" caption in the compare header line itself.
+	local NL = string.char(10)
+	local lines = array({})
+	for _, l in ipairs(out.lines) do
+		if tostring(l.text):find(NL, 1, true) then
+			for piece in tostring(l.text):gmatch("[^" .. NL .. "]+") do
+				lines[#lines + 1] = { size = l.size, text = piece, center = l.center, sep = l.sep, font = l.font }
+			end
+		else
+			lines[#lines + 1] = l
+		end
+	end
+	out.lines = lines
+	return out
+end
+
+-- Each socketed gem's worth in the picker's sort stat: the change from switching it, signed so a gem that helps is positive.
+M.gem_toggle_dps = function(p)
+	ensureBuild()
+	local group = requireGroup(p and p.groupIndex)
+	local dpsField = build.skillsTab.sortGemsByDPSField or "FullDPS"
+	local useFullDPS = dpsField == "FullDPS"
+	local fastCalcOptions = { nodeAlloc = true, requirementsItems = true, requirementsGems = true, skipEHP = dpsField ~= "TotalEHP", fullDPSOnly = useFullDPS }
+	local calcFunc, calcBase = build.calcsTab:GetMiscCalculator(build)
+	local base = gemUtil.dpsOf(calcBase, dpsField)
+	local gems = array({})
+	for i, gem in ipairs(group.gemList) do
+		if gem.gemData then
+			local enabled = gem.enabled
+			gem.enabled = enabled == false
+			local ok, output
+			if useFullDPS then
+				ok, output = pcall(calcFunc, nil, useFullDPS, fastCalcOptions)
+			else
+				ok, output = pcall(withoutFullDPS, calcFunc, nil, useFullDPS, fastCalcOptions)
+			end
+			gem.enabled = enabled
+			if ok and output then
+				local diff = gemUtil.dpsOf(output, dpsField) - base
+				gems[#gems + 1] = { index = i, worth = enabled == false and diff or -diff }
+			end
+		end
+	end
+	return { field = dpsField, base = base, gems = gems, rev = build.outputRevision }
 end
 
 -- Every gem name with what kind of thing it is, for highlighting names in

@@ -922,6 +922,7 @@
   "skills_col_level": "Level",
   "skills_col_quality": "Quality",
   "skills_col_count": "Count",
+  "skills_col_worth_title": "What each gem adds to {stat}, the stat chosen under Sort by: the change from switching it off. For a gem that is off, what switching it on would add.",
   "skills_gem_count_title": "How many of this skill add to its DPS. Use it for minions, totems, traps and mines, and for projectiles that can all hit one target.",
   "skills_remove_gem": "Remove gem",
   "skills_enable_effect": "Enable {name}",

@@ -67,6 +67,25 @@
       .catch(() => {});
   }
 
+  const sortField = $derived(options?.sortGemsByDPSField ?? "FullDPS");
+  let worth = $state(new Map<number, number>());
+  $effect(() => {
+    const g = sel?.index;
+    sortField;
+    build.rev;
+    if (g == null) return;
+    let live = true;
+    engine
+      .gemToggleDps(g)
+      .then((r) => {
+        if (live) worth = new Map(r.gems.map((x) => [x.index, x.worth]));
+      })
+      .catch(() => {
+        if (live) worth = new Map();
+      });
+    return () => (live = false);
+  });
+
   // gem tooltip (PoB's GemTooltip lines)
   let tip = $state<{ tt: Tooltip; x: number; y: number } | null>(null);
   let tipTimer = 0;
@@ -105,6 +124,8 @@
   function fmtDps(d: number | undefined): string {
     if (d == null) return "";
     const sign = d >= 0 ? "+" : "";
+    if (Math.abs(d) >= 1e9) return `${sign}${(d / 1e9).toFixed(1)}B`;
+    if (Math.abs(d) >= 1e6) return `${sign}${(d / 1e6).toFixed(1)}M`;
     if (Math.abs(d) >= 100000) return `${sign}${(d / 1000).toFixed(0)}k`;
     if (Math.abs(d) >= 1000) return `${sign}${(d / 1000).toFixed(1)}k`;
     return `${sign}${d.toFixed(Math.abs(d) < 10 ? 1 : 0)}`;
@@ -170,7 +191,7 @@
         return;
       }
       try {
-        const r = await engine.gemTooltip(groupIndex, gemIndex);
+        const r = await engine.gemTooltip(groupIndex, gemIndex, true);
         tipCache.set(key, r);
         tip = { tt: r, x, y };
       } catch {
@@ -430,8 +451,9 @@
         {/if}
 
         <div class="gems">
-          <div class="gcols label"><span></span><span>{m.skills_col_gem()}</span><span class="r">{m.skills_col_level()}</span><span class="r">{m.skills_col_quality()}</span><span class="r" title={m.skills_gem_count_title()}>{m.skills_col_count()}</span><span></span></div>
+          <div class="gcols label"><span></span><span>{m.skills_col_gem()}</span><span class="r" title={m.skills_col_worth_title({ stat: SORT_LABELS[sortField] ?? sortField })}>{SORT_LABELS[sortField] ?? sortField}</span><span class="r">{m.skills_col_level()}</span><span class="r">{m.skills_col_quality()}</span><span class="r" title={m.skills_gem_count_title()}>{m.skills_col_count()}</span><span></span></div>
           {#each sel.gems as gem (gem.index)}
+            {@const w = worth.get(gem.index)}
             <div class="gem" class:disabled={!gem.enabled}>
               <span class="ops">
                 <button class="mini" disabled={gem.index <= 1} onclick={() => build.run(() => engine.moveGem(sel.index, gem.index, gem.index - 1))}>▲</button>
@@ -448,6 +470,7 @@
                 <PobText text={(gem.color ?? "^7") + (gem.name ?? gem.nameSpec ?? "?")} />
                 {#if gem.errMsg}<span class="err small">{gem.errMsg}</span>{/if}
               </span>
+              <span class="worth num r" style:color={w == null || w === 0 ? "var(--fg-3)" : w > 0 ? "var(--ok)" : "var(--bad)"}>{w === 0 ? "0" : fmtDps(w)}</span>
               <input class="input sm num r" type="number" min="1" max={gem.maxLevel + 10} value={gem.level ?? 1} onchange={(e) => patchGem(sel.index, gem.index, { level: Number((e.target as HTMLInputElement).value) })} />
               <input class="input sm num r" type="number" min="0" max="30" value={gem.quality ?? 0} onchange={(e) => patchGem(sel.index, gem.index, { quality: Number((e.target as HTMLInputElement).value) })} />
               {#if gem.countable}
@@ -715,7 +738,7 @@
   .gcols,
   .gem {
     display: grid;
-    grid-template-columns: 44px 1fr 70px 70px 64px 26px;
+    grid-template-columns: 44px 1fr 96px 70px 70px 64px 26px;
     gap: 8px;
     align-items: center;
   }

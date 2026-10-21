@@ -1816,7 +1816,9 @@ export const engine = {
   calcMode: (mode?: string) => call<CalcMode>("calc_mode", mode ? { mode } : {}),
   copySocketGroup: (index: number) => call<{ text: string }>("copy_socket_group", { index }),
   pasteSocketGroup: (text: string) => call<Skills>("paste_socket_group", { text }),
-  gemTooltip: (groupIndex: number, gemIndex: number) => call<Tooltip>("gem_tooltip", { groupIndex, gemIndex }),
+  gemTooltip: (groupIndex: number, gemIndex: number, compare = false) => call<Tooltip>("gem_tooltip", { groupIndex, gemIndex, compare }),
+  /** Each socketed gem's worth in the picker's sort stat; positive when the gem helps. */
+  gemToggleDps: (groupIndex: number) => call<{ field: string; base: number; gems: { index: number; worth: number }[]; rev: number }>("gem_toggle_dps", { groupIndex }),
   /** The same tooltip for any gem, socketed or not, at the build's default gem level. */
   gemTooltipById: (gemId: string) => call<Tooltip>("gem_tooltip", { gemId }),
   /** Every gem name with its kind, for highlighting names in prose. */
