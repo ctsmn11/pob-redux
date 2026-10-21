@@ -2,6 +2,9 @@
   import type { Tooltip, TooltipHeader, TooltipLine } from "$lib/engine.svelte";
   import ItemFrame from "./ItemFrame.svelte";
   import PobText from "./PobText.svelte";
+  import { keycaps } from "$lib/keys";
+  import { wheelScroll } from "$lib/tooltip-scroll";
+  import { m } from "$lib/paraglide/messages";
 
   let {
     lines,
@@ -44,11 +47,11 @@
 </script>
 
 {#if header}
-  <div class="game" bind:this={el} style:left={`${left}px`} style:top={`${top}px`} style:max-width={`${width}px`}>
+  <div class="game" bind:this={el} use:wheelScroll={lines} data-scroll-hint={m.tooltip_scroll_hint({ key: keycaps("Mod")[0] })} style:left={`${left}px`} style:top={`${top}px`} style:max-width={`${width}px`}>
     <ItemFrame {lines} {header} {runic} {uniqueGem} {itemArt} />
   </div>
 {:else}
-  <div class="ptt" bind:this={el} style:left={`${left}px`} style:top={`${top}px`} style:width={`${width}px`}>
+  <div class="ptt" bind:this={el} use:wheelScroll={lines} data-scroll-hint={m.tooltip_scroll_hint({ key: keycaps("Mod")[0] })} style:left={`${left}px`} style:top={`${top}px`} style:width={`${width}px`}>
     {#each lines as l}
       {#if l.sep}
         <div class="sep"></div>
@@ -71,6 +74,23 @@
   }
   .game {
     width: max-content;
+  }
+  .ptt:global(.overflowing)::after,
+  .game:global(.overflowing)::after {
+    content: attr(data-scroll-hint);
+    position: sticky;
+    bottom: 0;
+    display: block;
+    padding: 5px 10px;
+    background: var(--bg-2);
+    border-top: 1px solid var(--line-1);
+    color: var(--fg-1);
+    font-size: 11px;
+    text-align: center;
+  }
+  .ptt:global(.overflowing)::after {
+    bottom: -10px;
+    margin: 6px -14px -10px;
   }
   .ptt {
     padding: 10px 14px;

@@ -1,7 +1,7 @@
 export const isMac = /mac/i.test(navigator.userAgent);
 
 /** Ctrl, or Cmd on macOS. */
-export function modKey(e: KeyboardEvent): boolean {
+export function modKey(e: KeyboardEvent | MouseEvent): boolean {
   return isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
 }
 

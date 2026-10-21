@@ -1205,6 +1205,7 @@
   "tree_stat_diff": "Stat differences",
   "tree_stat_diff_title": "Show what allocating or removing a node changes, in its tooltip (Ctrl+D)",
   "tree_no_changes": "No changes from this node.",
+  "tooltip_scroll_hint": "Hold {key} and scroll for more",
   "tree_power": "Power",
   "tree_power_title": "Show node power (p): estimated value of each unallocated node",
   "tree_power_stat_title": "Stat to score nodes by",

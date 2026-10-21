@@ -3,6 +3,8 @@
   import type { NodeCompare } from "$lib/engine.svelte";
   import type { TNode } from "$lib/tree/model";
   import PobText from "$lib/components/PobText.svelte";
+  import { keycaps } from "$lib/keys";
+  import { wheelScroll } from "$lib/tooltip-scroll";
   import { m } from "$lib/paraglide/messages";
 
   let {
@@ -40,7 +42,7 @@
   } = $props();
 </script>
 
-<div class="tip" class:fixed bind:this={el} style:left={`${left}px`} style:top={`${top}px`}>
+<div class="tip" class:fixed bind:this={el} use:wheelScroll={[node, diff]} data-scroll-hint={m.tooltip_scroll_hint({ key: keycaps("Mod")[0] })} style:left={`${left}px`} style:top={`${top}px`}>
   <div class="tip-head">
     <span class="tip-name" class:key={node.kind === "keystone"} class:notable={node.kind === "notable"}>{override?.name ?? node.name}</span>
     <span class="label">{node.asc ?? node.kind}</span>
@@ -112,6 +114,19 @@
     box-shadow: var(--shadow-pop);
     pointer-events: none;
     font-size: var(--fs-sm);
+  }
+  .tip:global(.overflowing)::after {
+    content: attr(data-scroll-hint);
+    position: sticky;
+    bottom: -10px;
+    display: block;
+    margin: 8px -12px -10px;
+    padding: 5px 12px;
+    background: var(--bg-2);
+    border-top: 1px solid var(--line-1);
+    color: var(--fg-1);
+    font-size: 11px;
+    text-align: center;
   }
   .tip.fixed {
     position: fixed;
