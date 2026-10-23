@@ -602,7 +602,9 @@ pub async fn agent_open(
     let gate = Arc::new(Gate::new(id[..6].to_string(), tools.into_iter().collect()));
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.map_err(|e| format!("cannot open the tool server: {e}"))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let server = crate::mcp::serve(crate::mcp::tool_context(&app), listener, token.clone(), Some(gate.clone()));
+    let mut ctx = crate::mcp::tool_context(&app);
+    Arc::get_mut(&mut ctx).unwrap().author = cli.label().into();
+    let server = crate::mcp::serve(ctx, listener, token.clone(), Some(gate.clone()));
 
     let session = Arc::new(Session {
         cli,
@@ -635,6 +637,7 @@ pub async fn agent_send(
     let mut proc = s.proc.lock().await;
     let stop = s.stop.subscribe();
     s.gate.begin(on_event);
+    let text = format!("{}\n\n{}", crate::memory::context(&app), text);
     let out = run_turn(&s, &mut proc, &text, stop).await;
     s.gate.end();
     match out {

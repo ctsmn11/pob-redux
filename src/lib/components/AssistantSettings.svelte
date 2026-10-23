@@ -15,6 +15,7 @@
   } from "$lib/ai/providers";
   import { chat } from "$lib/state/chat.svelte";
   import ProviderIcon from "$lib/components/ProviderIcon.svelte";
+  import AssistantMemory from "$lib/components/AssistantMemory.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import { m } from "$lib/paraglide/messages";
 
@@ -172,6 +173,8 @@
     if (p?.ready && !chat.catalog[p.id]) void chat.loadCatalog(p.id);
   });
 </script>
+
+<AssistantMemory />
 
 <div class="bar" {@attach () => {
   const id = setInterval(() => (now = Date.now()), 30_000);

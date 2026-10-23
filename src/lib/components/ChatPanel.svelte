@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import MemoryNotice from "$lib/components/MemoryNotice.svelte";
   import { chat, experimentDelta, MAX_WIDTH, MIN_WIDTH, type ToolTurn } from "$lib/state/chat.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import ModelPicker from "$lib/components/ModelPicker.svelte";
@@ -297,6 +298,8 @@
       {/if}
     </div>
   {/if}
+
+  <MemoryNotice />
 
   {#if !chat.ready}
     <div class="setup">

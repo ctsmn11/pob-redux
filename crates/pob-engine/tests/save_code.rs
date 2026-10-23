@@ -52,5 +52,17 @@ fn save_after_code_import() {
 
     assert!(written.contains("<PathOfBuilding"), "not a PoB document: {written}");
 
+    // A failed Save As must keep the original identity used by assistant memory.
+    let failed = tmp.join("missing-folder/failed.xml");
+    assert!(engine.call("save_build_file", &json!({ "path": failed })).is_err());
+    assert_eq!(engine.call("get_build", &Value::Null).unwrap()["file"], out.to_string_lossy().as_ref());
+
+    let before = engine.call("get_stats", &Value::Null).unwrap();
+    let moved = tmp.join("renamed.xml");
+    std::fs::rename(&out, &moved).unwrap();
+    engine.call("set_build_file_path", &json!({ "path": moved })).unwrap();
+    assert_eq!(engine.call("get_build", &Value::Null).unwrap()["file"], moved.to_string_lossy().as_ref());
+    assert_eq!(engine.call("get_stats", &Value::Null).unwrap(), before);
+
     let _ = std::fs::remove_dir_all(&tmp);
 }

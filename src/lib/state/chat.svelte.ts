@@ -337,7 +337,7 @@ class ChatStore {
       this.warm = "priming";
       this.warmNote = "priming the prompt";
       if (!this.defs.length) this.defs = await loadToolDefs();
-      const instructions = (await invoke<string>("ai_instructions").catch(() => "")) + style(game.current) + LOADING;
+      const instructions = (await invoke<string>("ai_instructions").catch(() => "")) + style(game.current) + LOADING + "\n" + await invoke<string>("memory_context");
       // The same request shape as a real turn, one token long, so the cached
       // prefix matches what the first question will send.
       const result = streamText({
@@ -951,7 +951,7 @@ class ChatStore {
       const model = this.buildModel();
       const level = this.effortLevel;
       const providerOptions = level ? { openaiCompatible: { reasoningEffort: level } } : undefined;
-      const instructions = (await invoke<string>("ai_instructions").catch(() => "")) + style(game.current) + LOADING;
+      const instructions = (await invoke<string>("ai_instructions").catch(() => "")) + style(game.current) + LOADING + "\n" + await invoke<string>("memory_context");
       // Set when the model itself ends the turn, so exhausting the step budget
       // can be told apart from finishing.
       let done = false;
@@ -1089,7 +1089,7 @@ class ChatStore {
 
           this.patchTool(turn.id, { status: "running" });
           try {
-            const value = await callTool(call.toolName, call.input);
+            const value = await callTool(call.toolName, call.input, this.provider);
             this.patchTool(turn.id, { result: value, status: "done" });
             // Every write returns absolute headline stats, so the strip stays
             // correct against the checkpoint without another round trip.

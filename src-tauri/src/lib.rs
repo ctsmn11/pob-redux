@@ -19,6 +19,7 @@ mod diagnostics;
 mod game;
 mod trade;
 mod voice;
+mod memory;
 
 use std::sync::Arc;
 
@@ -46,6 +47,8 @@ pub(crate) struct AppState {
     pub(crate) user_dir: PathBuf,
     builds_dirs: std::sync::RwLock<game::BuildsDirs>,
     pub(crate) mcp: mcp::McpState,
+    pub(crate) memory: memory::Memory,
+    engine_gate: std::sync::Mutex<()>,
     /// True until a game has been chosen, inferred from a file, or set by env.
     first_run: std::sync::atomic::AtomicBool,
     pending_link: std::sync::Mutex<Option<links::Link>>,
@@ -129,6 +132,25 @@ async fn export_diagnostics(app: tauri::AppHandle, state: State<'_, AppState>, p
 }
 
 impl AppState {
+    pub(crate) fn call(&self, method: &str, params: Value) -> Result<CallResult, String> {
+        let _guard = self.engine_gate.lock().unwrap();
+        let rt = self.rt.read().unwrap();
+        let lifecycle = matches!(method, "save_build_file" | "set_build_name");
+        let before = lifecycle.then(|| rt.engine.call("get_build", Value::Null).ok()
+            .and_then(|b| b.result.get("file").and_then(Value::as_str).map(PathBuf::from))).flatten();
+        let out = rt.engine.call(method, params).map_err(|e| e.to_string())?;
+        if let Some(src) = before {
+            let after = rt.engine.call("get_build", Value::Null).ok()
+                .and_then(|b| b.result.get("file").and_then(Value::as_str).map(PathBuf::from));
+            if let Some(dst) = after.filter(|dst| *dst != src) {
+                if let Err(e) = self.memory.relocate(rt.game, &src, Some(&dst), method == "save_build_file") {
+                    log::warn!("assistant memory lifecycle: {e}");
+                }
+            }
+        }
+        Ok(CallResult { result: out.result, elapsed_ms: out.elapsed_ms })
+    }
+
     pub(crate) fn engine(&self) -> EngineHandle {
         self.rt.read().unwrap().engine.clone()
     }
@@ -297,20 +319,21 @@ async fn gem_dps_parallel(state: State<'_, AppState>, group_index: u32) -> Resul
 }
 
 #[derive(Serialize)]
-struct CallResult {
+pub(crate) struct CallResult {
     result: Value,
     elapsed_ms: f64,
 }
 
 #[tauri::command]
 async fn engine_call(
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
     method: String,
     params: Option<Value>,
 ) -> Result<CallResult, String> {
-    let engine = state.engine();
     let out = tauri::async_runtime::spawn_blocking(move || {
-        engine.call(&method, params.unwrap_or(Value::Null))
+        let out = app.state::<AppState>().call(&method, params.unwrap_or(Value::Null));
+        if matches!(method.as_str(), "save_build_file" | "set_build_name" | "load_build_file" | "load_build_xml" | "load_build_code" | "new_build") { memory::changed(&app); }
+        out
     })
     .await
     .map_err(|e| e.to_string())?
@@ -709,8 +732,20 @@ fn safe_folder(root: &Path, folder: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+fn memory_move(state: &AppState, src: &Path, dst: Option<&Path>) {
+    if let Err(e) = state.memory.relocate(state.game(), src, dst, false) { log::warn!("assistant memory lifecycle: {e}"); }
+    if let Some(dst) = dst {
+        if let Some(file) = state.engine().call("get_build", Value::Null).ok().and_then(|b| b.result["file"].as_str().map(PathBuf::from)) {
+            if let Some(path) = memory::remap(&file, src, dst) {
+                let _ = state.engine().call("set_build_file_path", json!({ "path": path }));
+            }
+        }
+    }
+}
+
 #[tauri::command]
-fn rename_build(state: State<'_, AppState>, path: String, new_name: String) -> Result<String, String> {
+fn rename_build(app: tauri::AppHandle, state: State<'_, AppState>, path: String, new_name: String) -> Result<String, String> {
+    let _guard = state.engine_gate.lock().unwrap();
     let src = PathBuf::from(&path);
     ensure_in_builds(&state.builds_dir(), &src)?;
     let dst = src.with_file_name(format!("{}.xml", safe_name(&new_name)?));
@@ -718,11 +753,14 @@ fn rename_build(state: State<'_, AppState>, path: String, new_name: String) -> R
         return Err(format!("{} already exists", dst.display()));
     }
     std::fs::rename(&src, &dst).map_err(|e| e.to_string())?;
+    memory_move(&state, &src, Some(&dst));
+    memory::changed(&app);
     Ok(dst.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-fn move_build(state: State<'_, AppState>, path: String, folder: String) -> Result<String, String> {
+fn move_build(app: tauri::AppHandle, state: State<'_, AppState>, path: String, folder: String) -> Result<String, String> {
+    let _guard = state.engine_gate.lock().unwrap();
     let root = state.builds_dir();
     let src = PathBuf::from(&path);
     ensure_in_builds(&root, &src)?;
@@ -736,17 +774,23 @@ fn move_build(state: State<'_, AppState>, path: String, folder: String) -> Resul
         return Err(format!("{} already exists", dst.display()));
     }
     std::fs::rename(&src, &dst).map_err(|e| e.to_string())?;
+    memory_move(&state, &src, Some(&dst));
+    memory::changed(&app);
     Ok(dst.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-fn delete_build(state: State<'_, AppState>, path: String) -> Result<(), String> {
+fn delete_build(app: tauri::AppHandle, state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let _guard = state.engine_gate.lock().unwrap();
     let src = PathBuf::from(&path);
     ensure_in_builds(&state.builds_dir(), &src)?;
     if src.extension().and_then(|e| e.to_str()) != Some("xml") {
         return Err("only .xml builds can be deleted".into());
     }
-    std::fs::remove_file(&src).map_err(|e| e.to_string())
+    std::fs::remove_file(&src).map_err(|e| e.to_string())?;
+    memory_move(&state, &src, None);
+    memory::changed(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -791,8 +835,14 @@ fn rename_folder(root: &Path, folder: &str, new_name: &str) -> Result<String, St
 }
 
 #[tauri::command]
-fn rename_build_folder(state: State<'_, AppState>, folder: String, new_name: String) -> Result<String, String> {
-    rename_folder(&state.builds_dir(), &folder, &new_name)
+fn rename_build_folder(app: tauri::AppHandle, state: State<'_, AppState>, folder: String, new_name: String) -> Result<String, String> {
+    let _guard = state.engine_gate.lock().unwrap();
+    let root = state.builds_dir();
+    let src = safe_folder(&root, &folder)?;
+    let renamed = rename_folder(&root, &folder, &new_name)?;
+    memory_move(&state, &src, Some(&root.join(&renamed)));
+    memory::changed(&app);
+    Ok(renamed)
 }
 
 #[tauri::command]
@@ -1002,8 +1052,10 @@ async fn ai_call_tool(
     app: tauri::AppHandle,
     name: String,
     args: Option<serde_json::Map<String, serde_json::Value>>,
+    provider: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let ctx = mcp::tool_context(&app);
+    let mut ctx = mcp::tool_context(&app);
+    Arc::get_mut(&mut ctx).unwrap().author = format!("Integrated API assistant ({})", provider.as_deref().unwrap_or("unknown provider"));
     tools::dispatch(ctx, name, args.unwrap_or_default())
         .await
         .map(|(value, _)| value)
@@ -1090,6 +1142,7 @@ fn game_status(state: State<'_, AppState>) -> GameStatus {
 /// is saved for the next start.
 #[tauri::command]
 fn set_game(app: tauri::AppHandle, state: State<'_, AppState>, game: Game) -> Result<GameStatus, String> {
+    let _guard = state.engine_gate.lock().unwrap();
     state.first_run.store(false, std::sync::atomic::Ordering::Relaxed);
     let mut settings = game::load_settings(&app);
     settings.game = Some(game);
@@ -1272,6 +1325,8 @@ pub fn run() {
                 user_dir,
                 builds_dirs: std::sync::RwLock::new(game::load_settings(handle).builds_dirs),
                 mcp: mcp::McpState::new(),
+                engine_gate: std::sync::Mutex::new(()),
+                memory: memory::Memory::new(handle.path().app_local_data_dir()?.join("assistant-memory").join("store.json")),
                 first_run: std::sync::atomic::AtomicBool::new(first_run),
                 pending_link: std::sync::Mutex::new(link),
                 recovery_pending: std::sync::atomic::AtomicBool::new(session.unclean_exit),
@@ -1352,6 +1407,13 @@ pub fn run() {
             mcp::mcp_status,
             mcp::mcp_start,
             mcp::mcp_stop,
+            memory::memory_context,
+            memory::memory_pending,
+            memory::memory_manage,
+            memory::memory_enable,
+            memory::memory_edit,
+            memory::memory_delete,
+            memory::memory_resolve,
             ai_tools,
             ai_instructions,
             ai_log_append,

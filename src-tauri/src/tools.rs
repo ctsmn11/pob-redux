@@ -44,7 +44,7 @@ then list_affixes for the mod pool, then craft_rare, which builds it from PoB's 
 run of changes call checkpoint; every write returns `stats` and a `delta` \
 against the previous state, and rollback restores a checkpoint if the result is worse. Manage alternate \
 trees and gear sets with the list/select/create/copy/rename/delete _spec and _item_set tools. Use \
-save_build or export_build to persist the result. The user is watching the app while you work.";
+save_build or export_build to persist the result. The user is watching the app while you work. Read memory_read at the start and after a build change. Remember durable preferences, goals and decisions via memory_propose; only the user can approve in the app. Current requests override notes; obtain game facts from PoB tools.";
 
 const INSTRUCTIONS_POE1: &str = "This server drives the build that is open in PoB Redux (Path of Building for \
 Path of Exile 1). Every number comes from Path of Building's own calculation engine, and every change is \
@@ -74,7 +74,7 @@ then list_affixes for the mod pool, then craft_rare, which builds it from PoB's 
 run of changes call checkpoint; every write returns `stats` and a `delta` \
 against the previous state, and rollback restores a checkpoint if the result is worse. Manage alternate \
 trees and gear sets with the list/select/create/copy/rename/delete _spec and _item_set tools. Use \
-save_build or export_build to persist the result. The user is watching the app while you work.";
+save_build or export_build to persist the result. The user is watching the app while you work. Read memory_read at the start and after a build change. Remember durable preferences, goals and decisions via memory_propose; only the user can approve in the app. Current requests override notes; obtain game facts from PoB tools.";
 
 pub(crate) fn instructions(game: Game) -> &'static str {
     match game {
@@ -106,6 +106,7 @@ const HEADLINE: &[&str] = &[
 pub struct ToolContext {
     pub(crate) app: AppHandle,
     pub(crate) calls: Arc<AtomicU64>,
+    pub(crate) author: String,
 }
 
 pub(crate) enum ToolError {
@@ -126,7 +127,7 @@ impl ToolContext {
     }
 
     fn call(&self, method: &str, params: Value) -> Result<Value, ToolError> {
-        self.engine()
+        tauri::Manager::state::<crate::AppState>(&self.app)
             .call(method, params)
             .map(|o| o.result)
             .map_err(|e| ToolError::Failed(clean_error(&e.to_string())))
@@ -276,6 +277,9 @@ fn defs_poe2() -> Vec<ToolDef> {
     let activates = "The new one becomes active.";
 
     vec![
+        ro("memory_read", "Read enabled state, current game/build identity and approved global/current build Markdown with opaque document ids and revisions. Disabled memory returns no notes.", none()),
+        rw("memory_propose", "Propose replacement Markdown for an id from memory_read at its exact revision. Never writes approved memory. The user must approve in assistant settings, regardless of generic tool approval.", obj(json!({ "document_id": prop("string", "Opaque document id from memory_read"), "revision": prop("integer", "Exact document revision"), "text": prop("string", "Replacement Markdown, at most 16000 characters"), "reason": prop("string", "Why this durable preference, goal or decision should be remembered") }), &["document_id", "revision", "text", "reason"])).no_output_schema(),
+        ro("memory_proposal_status", "Read proposal status: pending, approved, rejected or invalidated. Does not approve a proposal.", obj(json!({ "proposal_id": prop("string", "Opaque proposal id") }), &["proposal_id"])),
         // Build
         rw(
             "load_build",
@@ -947,6 +951,7 @@ pub(crate) async fn dispatch(
         .await
         .map_err(|e| ToolError::Failed(e.to_string()))?;
     ctx.calls.fetch_add(1, Ordering::Relaxed);
+    if out.is_ok() && matches!(name.as_str(), "load_build" | "save_build" | "new_build") { crate::memory::changed(&ctx.app); }
     if let Ok((_, true)) = out {
         let _ = ctx.app.emit("mcp:changed", json!({ "tool": name }));
     }
@@ -955,6 +960,21 @@ pub(crate) async fn dispatch(
 
 /// Runs one tool. Returns the result and whether the build changed.
 pub(crate) fn run_tool(ctx: &ToolContext, name: &str, args: &JsonObject) -> Result<(Value, bool), ToolError> {
+    if matches!(name, "memory_read" | "memory_propose" | "memory_proposal_status") {
+        let state = tauri::Manager::state::<crate::AppState>(&ctx.app);
+        let _guard = state.engine_gate.lock().unwrap();
+        let (game, path) = crate::memory::identity(&state);
+        let value = match name {
+            "memory_read" => state.memory.read(game, path.as_deref(), false),
+            "memory_proposal_status" => state.memory.status(&req_str(args, "proposal_id")?),
+            _ => {
+                let revision = args.get("revision").and_then(Value::as_u64).ok_or_else(|| ToolError::Invalid("revision must be a nonnegative integer".into()))?;
+                state.memory.propose(game, path.as_deref(), &req_str(args, "document_id")?, revision, &req_str(args, "text")?, &req_str(args, "reason")?, &ctx.author)
+                    .map(|p| { crate::memory::changed(&ctx.app); json!({ "id": p.id, "document_id": p.document_id, "status": p.status }) })
+            }
+        }.map_err(ToolError::Failed)?;
+        return Ok((value, false));
+    }
     // Snapshot the headline before a write so the result can carry the change.
     let before = if is_read_only(name) { None } else { Some(ctx.headline()) };
     let stats = |v: Value| Ok((ctx.with_stats(v, before.as_ref()), true));
@@ -1580,9 +1600,25 @@ mod tests {
     use crate::game::Game;
 
     #[test]
+    fn memory_tools_are_shared_without_an_agent_commit_tool() {
+        for game in [Game::Poe1, Game::Poe2] {
+            let d = defs(game);
+            let memory: Vec<_> = d.iter().filter(|t| t.name.starts_with("memory_")).collect();
+            assert_eq!(memory.len(), 3);
+            assert!(memory.iter().any(|t| t.name == "memory_read" && t.read_only));
+            assert!(memory.iter().any(|t| t.name == "memory_proposal_status" && t.read_only));
+            let propose = memory.iter().find(|t| t.name == "memory_propose").unwrap();
+            assert!(!propose.read_only);
+            assert!(propose.output_schema.is_none());
+            assert!(propose.schema["properties"].get("path").is_none());
+            assert!(propose.schema["properties"].get("approve").is_none());
+        }
+    }
+
+    #[test]
     fn poe1_registry_speaks_poe1() {
         let d = defs(Game::Poe1);
-        assert_eq!(d.len(), 80, "PoE1 tool count changed");
+        assert_eq!(d.len(), 83, "PoE1 tool count changed");
         for (name, _) in POE1_TEXT {
             assert!(d.iter().any(|t| t.name == *name), "POE1_TEXT names {name}, which is not a tool");
         }
@@ -1600,7 +1636,7 @@ mod tests {
     #[test]
     fn registry_is_stable_and_measured() {
         let d = defs(Game::Poe2);
-        assert_eq!(d.len(), 77, "tool count changed");
+        assert_eq!(d.len(), 80, "tool count changed");
 
         let mut names: Vec<&str> = d.iter().map(|t| t.name).collect();
         names.sort_unstable();

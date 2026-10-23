@@ -7,6 +7,9 @@
  * External MCP clients still see every tool.
  */
 export const ALLOWED = new Set([
+  "memory_read",
+  "memory_propose",
+  "memory_proposal_status",
   // read
   "get_character",
   "get_stats",
@@ -88,6 +91,9 @@ export const ALLOWED = new Set([
  * never touches gear or jewels should not carry them.
  */
 export const CORE = new Set([
+  "memory_read",
+  "memory_propose",
+  "memory_proposal_status",
   "get_character",
   "get_stats",
   "get_sidebar",

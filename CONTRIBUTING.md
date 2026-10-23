@@ -133,3 +133,44 @@ and never writes that file.
 | `POB_REDUX_OPEN` | Build XML to open at launch. The first argument does the same |
 | `POB_REDUX_POOL` | Worker engines for node power and gem scoring. They boot on the first scan and are released two minutes after the last. Default: half the cores, at most 8 |
 | `POB_REDUX_MCP` | Start the MCP server on this port at launch, whatever the saved setting says |
+
+## Assistant memory
+
+Assistant settings contain an opt-in **Assistant memory** switch, editors for the global and current
+saved build documents, and a review queue. The switch defaults to off. The app stores approved
+Markdown, revisions, the setting and proposal history together in `assistant-memory/store.json`
+under Tauri's local app data directory (`dev.pobredux.desktop` on Linux, normally
+`~/.local/share/dev.pobredux.desktop/`). Nothing is added to PoB XML. The store has format version 1;
+each document is limited to 16,000 Unicode characters. Writes are serialized and atomically replaced.
+Unreadable or unsupported stores are left untouched; build operations remain available.
+
+The global document is shared by both games. Build documents use the game and a normalized absolute
+file path. New and imported unsaved builds have only global memory. Opening a saved file restores its
+notes. In-app rename and move (including folders) preserve the document; Save As copies notes to an
+independent document and preserves any existing destination notes. Deleting a build in the app deletes
+its document and invalidates pending proposals. External moves are not tracked. Documents with missing
+build files remain visible and removable in assistant settings. Renaming or moving a document invalidates
+pending proposals, so the user reviews a new proposal with the updated destination.
+
+All assistant transports share these registry tools:
+
+| Tool | Arguments and result |
+|---|---|
+| `memory_read` | No arguments. Returns `enabled`, current `game`/`build`, and `global`/`current` documents with opaque `id`, `revision` and Markdown `text`. Disabled memory returns no notes. |
+| `memory_propose` | `document_id`, exact `revision`, replacement `text`, `reason`. Returns proposal `id`, `document_id`, and `status: pending`; never commits notes. Only global or the current saved build may be targeted. |
+| `memory_proposal_status` | `proposal_id`. Returns identifiers and `pending`, `approved`, `rejected`, or `invalidated`. |
+
+Approval, editing and deletion are separate UI commands and are never exposed as agent tools. Generic
+chat write approval or its bypass cannot approve memory. Concurrent proposals use the original document
+revision: approving one invalidates competitors. Manual edits and deletion also invalidate proposals.
+Disabling memory blocks agent reads/proposals and invalidates every pending proposal, while keeping
+user documents editable. Pending proposals survive app restarts and keep their original destination
+when another build is opened.
+
+API prompts and CLI messages (Claude, Codex and all ACP adapters) receive a refreshed memory snapshot
+on each new message. MCP instructions ask external clients to read memory at the beginning and after
+switching builds; those clients control whether their models follow the instructions. Notes are sent
+to the assistant in use. Disabling cannot erase notes already in a conversation. Prefer durable user
+preferences, goals and decisions; current user requests override notes and live facts come from PoB.
+Memory emits `memory:changed`, never a build calculation change. Cloud sync, embeddings, semantic search,
+CLAUDE.md import and automatic conversation summaries are outside this version.

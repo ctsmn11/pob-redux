@@ -87,6 +87,6 @@ export function findTools(defs: ToolDef[], query: string, limit = 8): ToolDef[] 
     .map((x) => x.d);
 }
 
-export function callTool(name: string, args: unknown): Promise<unknown> {
-  return invoke("ai_call_tool", { name, args: args ?? {} });
+export function callTool(name: string, args: unknown, provider?: string): Promise<unknown> {
+  return invoke("ai_call_tool", { name, args: args ?? {}, provider });
 }

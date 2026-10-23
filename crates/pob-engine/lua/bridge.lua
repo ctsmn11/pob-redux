@@ -802,8 +802,16 @@ M.save_build_code = function()
 	return { code = encodeCode(build:SaveDB("code")) }
 end
 
+M.set_build_file_path = function(p)
+	ensureBuild()
+	build.dbFileName = p.path
+	build.buildName = p.path:match("([^/\\]+)%.xml$") or build.buildName
+	return { ok = true }
+end
+
 M.save_build_file = function(p)
 	ensureBuild()
+	local previousFile, previousName = build.dbFileName, build.buildName
 	if p and p.path then
 		build.dbFileName = p.path
 		build.buildName = p.path:match("([^/\\]+)%.xml$") or build.buildName
@@ -812,7 +820,9 @@ M.save_build_file = function(p)
 		error("build has no file name; pass params.path", 0)
 	end
 	if build:SaveDBFile() then
-		error("could not write " .. tostring(build.dbFileName), 0)
+		local failedFile = build.dbFileName
+		build.dbFileName, build.buildName = previousFile, previousName
+		error("could not write " .. tostring(failedFile), 0)
 	end
 	-- SaveDBFile resets the mod flags; `unsaved` is only recomputed in OnFrame.
 	frame()

@@ -51,6 +51,7 @@ pub(crate) fn tool_context(app: &AppHandle) -> Arc<ToolContext> {
     Arc::new(ToolContext {
         app: app.clone(),
         calls: state.mcp.calls.clone(),
+        author: "External MCP client".into(),
     })
 }
 
