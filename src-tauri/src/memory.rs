@@ -52,7 +52,7 @@ fn id() -> Result<String, String> {
 fn validate(text: &str) -> Result<(), String> {
     if text.chars().count() > LIMIT { Err(format!("memory exceeds {LIMIT} characters")) } else { Ok(()) }
 }
-pub fn normalize(path: &Path) -> Result<PathBuf, String> {
+fn clean_path(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() { return Err("memory requires an absolute build path".into()); }
     let mut clean = PathBuf::new();
     for part in path.components() {
@@ -62,15 +62,21 @@ pub fn normalize(path: &Path) -> Result<PathBuf, String> {
             other => clean.push(other.as_os_str()),
         }
     }
+    Ok(clean)
+}
+pub fn normalize(path: &Path) -> Result<PathBuf, String> {
+    let clean = clean_path(path)?;
     #[cfg(windows)]
-    { clean = PathBuf::from(clean.to_string_lossy().to_lowercase()); }
+    let clean = PathBuf::from(clean.to_string_lossy().to_lowercase());
     Ok(clean)
 }
 pub fn remap(path: &Path, src: &Path, dst: &Path) -> Option<PathBuf> {
-    let path = normalize(path).ok()?;
-    let src = normalize(src).ok()?;
-    let dst = normalize(dst).ok()?;
-    let rest = path.strip_prefix(src).ok()?;
+    let path = clean_path(path).ok()?;
+    let src = clean_path(src).ok()?;
+    let dst = clean_path(dst).ok()?;
+    normalize(&path).ok()?.strip_prefix(normalize(&src).ok()?).ok()?;
+    // Match memory identities case-insensitively on Windows, but keep the build's display name.
+    let rest: PathBuf = path.components().skip(src.components().count()).collect();
     Some(if rest.as_os_str().is_empty() { dst } else { dst.join(rest) })
 }
 
@@ -460,10 +466,10 @@ mod tests {
         let a = f.doc(Some(&f.a)); f.memory.edit(&a.id, 0, "Only build A").unwrap();
         let first = prompt(&f.memory, Game::Poe2, Some(&f.a));
         assert!(first.contains("Global preference") && first.contains("Only build A"));
-        assert!(first.contains(f.a.to_str().unwrap()));
+        assert!(first.contains(&serde_json::to_string(&f.a).unwrap()));
         let next = prompt(&f.memory, Game::Poe2, Some(&f.b));
         assert!(next.contains("Global preference") && !next.contains("Only build A"));
-        assert!(next.contains(f.b.to_str().unwrap()));
+        assert!(next.contains(&serde_json::to_string(&f.b).unwrap()));
         assert!(!prompt(&f.memory, Game::Poe1, Some(&f.a)).contains("Only build A"));
         f.memory.edit(&global.id, 1, "Updated preference").unwrap();
         let next = prompt(&f.memory, Game::Poe2, None);
@@ -507,5 +513,18 @@ mod tests {
         assert!(mapped.is_file());
         assert_eq!(mapped.as_os_str(), f.b.as_os_str());
         assert_eq!(remap(&f.a, &f.root, &f.root.join("moved")).unwrap(), f.root.join("moved/a.xml"));
+    }
+    #[test]
+    fn remapping_preserves_destination_and_nested_filename_case() {
+        let f = Fixture::new();
+        let source = f.root.join("Builds");
+        let file = source.join("Witch/MyBuild.xml");
+        let destination = f.root.join("Renamed");
+        assert_eq!(remap(&file, &source, &destination).unwrap(), destination.join("Witch/MyBuild.xml"));
+        let renamed = f.root.join("NewBuild.xml");
+        assert_eq!(remap(&file, &file, &renamed).unwrap(), renamed);
+        assert!(remap(&file, &f.root.join("Build"), &destination).is_none());
+        #[cfg(windows)]
+        assert_eq!(remap(&file, &normalize(&source).unwrap(), &destination).unwrap(), destination.join("Witch/MyBuild.xml"));
     }
 }
